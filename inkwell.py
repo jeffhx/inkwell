@@ -4,15 +4,23 @@
 """运行于终端的Ai助手，主要为Kindle设计，也适用于其他系统的终端
 1. Python >= 3.8
 2. 不依赖任何第三方库
+3. 支持多个api服务器自动轮换，规避流量限制
+4. 支持终端显示格式化的markdown
 用法：
 1. 使用命令行参数 --setup 开始交互式的初始化和配置
 2. 不带参数执行，自动使用同一目录下的配置文件 config.json，如果没有则自动新建一个默认模板
 3. 如果需要不同的配置，可以传入参数 python inkwell.py --config path/to/config.json
+4. 在kindle上使用时可以在kterm的menu.json里面添加一个项目，action值为：
+bin/kterm.sh -e 'python3 /mnt/us/extensions/kterm/ai/inkwell.py --config /mnt/us/extensions/kterm/ai/google.json
+5. 如果需要自动开关wifi，可以在kterm.sh的 `${EXTENSION}/bin/kterm ${PARAM} "$@"` 行前后添加
+lipc-set-prop com.lab126.cmd wirelessEnable 1
+lipc-set-prop com.lab126.cmd wirelessEnable 0
 """
 import os, sys, re, json, itertools, ssl, argparse
 import http.client
+from urllib.parse import urlsplit
 
-__Version__ = 'v1.0 (2024-12-02)'
+__Version__ = 'v1.1 (2024-12-04)'
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_JSON = f"{BASE_PATH}/config.json"
 HISTORY_JSON = "history.json"
@@ -41,6 +49,8 @@ _TERMINAL_COLORS = {"black": 30, "red": 31, "green": 32, "yellow": 33, "blue": 3
     "orange": (255,165,0), "grey": 90}
 
 DEFAULT_TOPIC = 'new conversation'
+DEFAULT_CFG = {"provider": "google", "model": "gemini-1.5-flash", "api_key": "", "api_host": "", "display_style": "markdown",
+    "chat_type": "multi_turn", "token_limit": 4000, "max_history": 10, "custom_instructions": ""}
 
 #为简化代码，设置几个全局变量
 g_cfgFile = ''
@@ -52,10 +62,11 @@ g_tokenNum = 0
 
 #AI响应的结构封装
 class AiResponse:
-    def __init__(self, success, content="", error=""):
+    def __init__(self, success, content='', error='', host=''):
         self.success = success
         self.content = content
         self.error = error
+        self.host = host
 
 #翻译颜色代码为终端转义字符串
 #color: 支持 列表[R, G, B]/字符串"red"
@@ -108,14 +119,18 @@ def getConfig(cfgFile=None):
     g_cfgFile = cfgFile or CONFIG_JSON
     cfg = {}
     if not os.path.isfile(g_cfgFile):
-        sprint(f'\n\nThe file {g_cfgFile} does not exist. A default file will be created', fg='red', bg='white')
-        sprint('Please complete the file using a text editor\n\n', fg='red', bg='white')
+        print('\n')
+        sprint(f'The file {g_cfgFile} does not exist', bold=True)
+        sprint('Creating a default configuration file with this name...', bold=True)
+        print('Edit the file manually or run with the -s option to complete the setup')
+        print('')
         try:
             with open(g_cfgFile, 'w', encoding='utf-8') as f:
-                json.dump({"provider": "gemini", "model": "gemini-1.5-flash", "api_key": "", "api_host": "", 
-                    "display_style": "markdown", "token_limit": 4000, "max_history": 10, "custom_instructions": ""}, f, indent=2)
+                json.dump(DEFAULT_CFG, f, indent=2)
         except Exception as e:
             print(f'Failed to write {g_cfgFile}: {e}')
+        input('Press return key to quit ')
+        return None
 
     if os.path.isfile(g_cfgFile):
         with open(g_cfgFile, 'r', encoding='utf-8') as f:
@@ -161,7 +176,7 @@ def getHistory():
     return history
 
 #将一条数据添加到历史对话
-def addHistory(topic, messages):
+def addHistory(client, topic, messages):
     global g_history, g_config
     maxHisotry = g_config.get('max_history', 10)
     if maxHisotry <= 0:
@@ -170,7 +185,8 @@ def addHistory(topic, messages):
     if g_history and g_history[-1]['topic'] == topic:
         g_history[-1]['messages'] = messages[1:] #第一条消息为背景prompt
     else:
-        g_history.append({'topic': topic, 'messages': messages[1:]})
+        convType = 'single_turn' if client.singleTurn else 'multi_turn'
+        g_history.append({'topic': topic, 'chat_type': convType, 'messages': messages[1:]})
     if len(g_history) > maxHisotry:
         g_history = g_history[-maxHisotry:]
     saveHistory(g_history)
@@ -341,7 +357,7 @@ def parseRange(txt):
     return ret
 
 #显示菜单，根据用户选择进行相应的处理
-def showMenu():
+def showMenu(client):
     global g_currTopic, g_messages, g_history
     print('')
     sprint(' Current conversation ', fg='white', bg='yellow', bold=True)
@@ -380,7 +396,7 @@ def showMenu():
                 print('The filename is empty, canceled')
         elif userInput == '0': #开始一个新的对话
             if g_currTopic != DEFAULT_TOPIC:
-                addHistory(g_currTopic, g_messages)
+                addHistory(client, g_currTopic, g_messages)
             g_messages = g_messages[:1] #第一个元素是背景信息
             g_currTopic = DEFAULT_TOPIC
             g_tokenNum = 0
@@ -392,18 +408,20 @@ def showMenu():
             if 1 <= index <= len(g_history):
                 msg = g_history.pop(index - 1)
                 if g_currTopic != DEFAULT_TOPIC:
-                    addHistory(g_currTopic, g_messages)
+                    addHistory(client, g_currTopic, g_messages)
                 g_messages = g_messages[:1] + msg.get('messages', [])
                 g_currTopic = msg.get('topic', DEFAULT_TOPIC)
                 g_tokenNum = calculateToken(g_messages)
-                replayConversation()
+                replayConversation(msg.get('chat_type'))
                 break
             else:
                 print('The conversation number is out of range')
 
 #重新输出对话信息，用于切换对话历史
-def replayConversation():
+def replayConversation(chatType):
     global g_currTopic, g_messages
+    #if chatType == 'single_turn':
+    #    sprint('These conversations are based on a single-turn conversation model.', bold=True)
     for item in g_messages[1:]:
         if item.get('role') == 'user':
             printUserMessage(item.get('content'))
@@ -422,13 +440,12 @@ def printUserMessage(content):
 #打印AI返回的内容
 def printAiResponse(resp):
     global g_config
-    printChatBubble('assistant')
+    printChatBubble('assistant', resp.host)
     if resp.success:
         disStyle = g_config.get('display_style', 'markdown')
         content = resp.content if disStyle == 'plaintext' else markdownToTerm(resp.content)
         print(content.replace('\n\n', '\n').strip('\n'))
     else:
-        sprint('Error: ', fg='red', bold=True)
         print(resp.error)
 
 #简单的处理markdown格式，用于在终端显示粗体斜体等效果
@@ -510,12 +527,11 @@ def mdTableToTerm(content):
 
 #在终端打印对话泡泡，显示角色和对话主题
 def printChatBubble(role, topic=''):
+    topic = f' ({topic})' if topic else ''
     if role == 'user':
         role, fg, bg, bubFg = ' YOU ', 'white', 'green', 'bright_black'
-        topic = f' ({topic})' if topic else ''
     else:
         role, fg, bg, bubFg = ' AI ', 'white', 'cyan', 'bright_black'
-        topic = ''
     #暂时不打印 ╞ ╡，避免不同的终端字体不同而不对齐
     txt = " {}{} ".format(style(role, fg=fg, bg=bg, bold=True), style(topic, fg=bubFg))
     charCnt = len(role) + len(topic) + 2
@@ -537,12 +553,13 @@ def updateTopic(client, msg=None):
 
 #给AI发请求，返回 AiResponse
 def fetchAiResponse(client, messages):
+    host = ''
     try:
-        respTxt = client.chat(messages)
+        respTxt, host = client.chat(messages)
     except:
-        return AiResponse(success=False, error=loc_exc_pos('Error'))
+        return AiResponse(success=False, error=loc_exc_pos('Error'), host=host)
     else:
-        return AiResponse(success=True, content=respTxt)
+        return AiResponse(success=True, content=respTxt, host=host)
 
 #统计当前的token数，（现在计算的是字节数）
 def calculateToken(messages):
@@ -565,16 +582,23 @@ def start(cfgFile):
     
     #获取配置数据
     cfg = getConfig(cfgFile)
+    if cfg is None:
+        return
+
     apiKey = cfg.get('api_key')
     if not apiKey:
         print('')
         sprint('Api key is missing', bold=True)
         sprint('Set it in the config file or run with the -s option', bold=True)
+        print('')
+        userInput = input('Press return key to quit ')
         return
 
     provider = cfg.get('provider')
     model = cfg.get('model')
-    client = SimpleAiProvider(provider, apiKey=apiKey, model=model, apiHost=cfg.get('api_host'))
+    singleTurn = bool(cfg.get('chat_type') == 'single_turn')
+    client = SimpleAiProvider(provider, apiKey=apiKey, model=model, apiHost=cfg.get('api_host'),
+        singleTurn=singleTurn)
     print('Model: {}'.format(style(f'{provider}/{model}', bold=True)))
     print('Empty line to send, ? to menu, q to quit')
     
@@ -583,6 +607,8 @@ def start(cfgFile):
     #role 有三种可能值：system, user, assistant
     g_messages = [{"role": "system", "content": cfg.get('custom_instructions') or CUSTOM_INSTRUCTIONS}]
     quitRequested = False
+    #print('')
+    #sprint('Your are using a single-turn conversation model', bold=True)
     while not quitRequested:
         msgArr = []
         printChatBubble('user', g_currTopic)
@@ -596,7 +622,7 @@ def start(cfgFile):
                 msgArr = []
                 ret = 'reshow'
                 while ret == 'reshow':
-                    ret = showMenu()
+                    ret = showMenu(client)
                 if ret == 'quit':
                     quitRequested = True
                     break
@@ -615,9 +641,10 @@ def start(cfgFile):
                 printAiResponse(resp)
                 printChatBubble('user', g_currTopic)
 
+    client.close()
     #保存当前记录
     if g_currTopic != DEFAULT_TOPIC:
-        addHistory(g_currTopic, g_messages)
+        addHistory(client, g_currTopic, g_messages)
 
 #交互式配置过程
 def setup(cfgFile):
@@ -650,11 +677,12 @@ def setup(cfgFile):
             cfg['api_key'] = userInput
             break
 
-    #Api host
+    #主机地址，可以为多个，使用分号分割
     print('')
-    sprint(' Api host (optional) ', fg='white', bg='yellow', bold=True)
+    sprint(' Api host (semicolon-separated) ', fg='white', bg='yellow', bold=True)
     userInput = input('» ')
-    cfg['api_host'] = userInput
+    cfg['api_host'] = ';'.join([e if e.startswith('http') else 'https://' + e 
+        for e in userInput.replace(' ', '').split(';') if e])
 
     #Display style
     print('')
@@ -662,8 +690,23 @@ def setup(cfgFile):
     styles = ['markdown', 'markdown_table', 'plaintext']
     print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(styles, 1)))
     while True:
-        if '1' <= (userInput := input('» ')) <= str(len(styles)):
+        userInput = input('» [1] ') or '1'
+        if '1' <= userInput <= str(len(styles)):
             cfg['display_style'] = styles[int(userInput) - 1]
+            break
+
+    #是否支持上下文多轮对话
+    print('')
+    sprint(' Chat type ', fg='white', bg='yellow', bold=True)
+    turns = ['Multi-turn (multi-step conversations)', 'Single-turn (One-shot conversations only)']
+    print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(turns, 1)))
+    while True:
+        userInput = input('» [1] ') or '1'
+        if userInput == '1':
+            cfg['chat_type'] = 'multi_turn'
+            break
+        elif userInput == '2':
+            cfg['chat_type'] = 'single_turn'
             break
     
     #Conversation token limit
@@ -707,23 +750,23 @@ def setup(cfgFile):
 #rpm(requests per minute)是针对免费用户的，如果是付费用户，一般会高很多，可以自己修改
 #大语言模型发展迅速，估计没多久这些数据会全部过时
 AI_LIST = {
-    'google': {'host': 'generativelanguage.googleapis.com', 'models': [
+    'google': {'host': 'https://generativelanguage.googleapis.com', 'models': [
         {'name': 'gemini-1.5-flash', 'rpm': 15, 'context': 128000}, #其实支持100万
         {'name': 'gemini-1.5-flash-8b', 'rpm': 15, 'context': 128000}, 
         {'name': 'gemini-1.5-pro', 'rpm': 2, 'context': 128000},],},
-    'openai': {'host': 'api.openai.com', 'models': [
+    'openai': {'host': 'https://api.openai.com', 'models': [
         {'name': 'gpt-4o-mini', 'rpm': 3, 'context': 128000},
         {'name': 'gpt-4o', 'rpm': 3, 'context': 128000},
         {'name': 'gpt-4-turbo', 'rpm': 3, 'context': 128000},
         {'name': 'gpt-3.5-turbo', 'rpm': 3, 'context': 16000},
         {'name': 'gpt-3.5-turbo-instruct', 'rpm': 3, 'context': 4000},],},
-    'anthropic': {'host': 'api.anthropic.com', 'models': [
+    'anthropic': {'host': 'https://api.anthropic.com', 'models': [
         {'name': 'claude-2', 'rpm': 5, 'context': 100000},
         {'name': 'claude-3', 'rpm': 5, 'context': 200000},
         {'name': 'claude-2.1', 'rpm': 5, 'context': 100000},],},
-    'xai': {'host': 'api.x.ai', 'models': [
+    'xai': {'host': 'https://api.x.ai', 'models': [
         {'name': 'grok-beta', 'rpm': 60, 'context': 128000},],},
-    'mistral': {'host': 'api.mistral.ai', 'models': [
+    'mistral': {'host': 'https://api.mistral.ai', 'models': [
         {'name': 'open-mistral-7b', 'rpm': 60, 'context': 32000},
         {'name': 'mistral-small-latest', 'rpm': 60, 'context': 32000},
         {'name': 'open-mixtral-8x7b', 'rpm': 60, 'context': 32000},
@@ -731,14 +774,14 @@ AI_LIST = {
         {'name': 'mistral-medium-latest', 'rpm': 60, 'context': 32000},
         {'name': 'mistral-large-latest', 'rpm': 60, 'context': 128000},
         {'name': 'pixtral-12b-2409', 'rpm': 60, 'context': 128000},],},
-    'groq': {'host': 'api.groq.com', 'models': [
+    'groq': {'host': 'https://api.groq.com', 'models': [
         {'name': 'gemma2-9b-it', 'rpm': 30, 'context': 8000},
         {'name': 'gemma-7b-it', 'rpm': 30, 'context': 8000},
         {'name': 'llama-guard-3-8b', 'rpm': 30, 'context': 8000},
         {'name': 'llama3-70b-8192', 'rpm': 30, 'context': 8000},
         {'name': 'llama3-8b-8192', 'rpm': 30, 'context': 8000},
         {'name': 'mixtral-8x7b-32768', 'rpm': 30, 'context': 32000},],},
-    'alibaba': {'host': 'dashscope.aliyuncs.com', 'models': [
+    'alibaba': {'host': 'https://dashscope.aliyuncs.com', 'models': [
         {'name': 'qwen-turbo', 'rpm': 60, 'context': 128000}, #其实支持100万
         {'name': 'qwen-plus', 'rpm': 60, 'context': 128000},
         {'name': 'qwen-long', 'rpm': 60, 'context': 128000},
@@ -755,12 +798,15 @@ class HttpResponseError(Exception):
 
 class SimpleAiProvider:
     #name: AI提供商的名字
-    def __init__(self, name, apiKey, model=None, apiHost=None):
+    #apiHost: 支持自搭建的API转发服务器，传入以分号分割的地址列表字符串，则逐个使用
+    #singleTurn: 一些API转发服务不支持多轮对话模式，设置此标识，当前仅支持 openai
+    def __init__(self, name, apiKey, model=None, apiHost=None, singleTurn=False):
         name = name.lower()
         if name not in AI_LIST:
             raise ValueError(f"Unsupported provider: {name}")
         self.name = name
         self.apiKey = apiKey
+        self.singleTurn = singleTurn
         
         index = 0
         for idx, item in enumerate(AI_LIST[name]['models']):
@@ -774,29 +820,53 @@ class SimpleAiProvider:
         self.context_size = item['context']
         if self.rpm <= 0:
             self.rpm = 2
-        if self.context_size < 4000:
-            self.context_size = 4000
-        self.apiHost = apiHost
-        self.conn = None
-        self.createConnection()
+        if self.context_size < 1000:
+            self.context_size = 1000
+        #分析主机和url，保存为SplitResult(scheme,netloc,path,query,frament)元祖
+        #connPools每个元素为 [host_tuple, conn_obj]
+        self.connPools = [[urlsplit(e if e.startswith('http') else 'https://' + e), None]
+            for e in (apiHost or AI_LIST[name]['host']).replace(' ', '').split(';')]
+        self.host = '' #当前正在使用的 netloc
+        self.connIdx = 0
+        self.createConnections()
+
+    @property
+    def conn(self):
+        ret = self.connPools[self.connIdx]
+        self.connIdx += 1
+        if self.connIdx >= len(self.connPools):
+            self.connIdx = 0
+        #print(f'Using {ret[0].host}') #TODO
+        return ret
 
     #创建长连接
-    def createConnection(self):
-        host = self.apiHost or AI_LIST[self.name]['host']
-        if (index := host.find('//')) >= 0:
-            host = host[index + 2:]
-        if (index := host.find('/')) > 0:
-            host = host[:index]
+    def createConnections(self):
         self.close()
-        self.conn = http.client.HTTPSConnection(host, timeout=30, context=ssl._create_unverified_context())
+        self.connPools = []
+        for host in self._hosts:
+            #使用http.client.HTTPSConnection有一个好处是短时间多次对话只需要一次握手
+            if host.scheme == 'https':
+                sslCtx = ssl._create_unverified_context()
+                self.connPools.append(http.client.HTTPSConnection(host.netloc, timeout=30, context=sslCtx))
+            else:
+                self.connPools.append(http.client.HTTPConnection(host.netloc, timeout=30))
+        #尽量不修改connIdx，保证能轮询每个host
+        if self.connIdx >= len(self.connPools):
+            self.connIdx = 0
 
     #发起一个网络请求，返回json数据
     def post(self, path, payload, headers, toJson=True):
+        #print(f'payload={payload}')
+        #print(f'headers={headers}')
         retried = 0
         while retried < 2:
             try:
-                self.conn.request("POST", path, json.dumps(payload), headers)
-                resp = self.conn.getresponse()
+                host, conn = self.conn #(host_tuple, conn_obj)
+                self.host = host.netloc
+                #拼接路径
+                url = '/' + host.path.strip('/') + (('?' + host.query) if host.query else '') + path.lstrip('/')
+                conn.request('POST', url, json.dumps(payload), headers)
+                resp = conn.getresponse()
                 body = resp.read().decode("utf-8")
                 if not (200 <= resp.status < 300):
                     raise HttpResponseError(resp.status, resp.reason, body)
@@ -804,15 +874,15 @@ class SimpleAiProvider:
             except (http.client.CannotSendRequest, http.client.RemoteDisconnected) as e:
                 if retried:
                     raise
-                print("Connection issue, retrying:", e)
-                self.createConnection()
+                #print("Connection issue, retrying:", e)
+                self.createConnections()
                 retried += 1
 
     #关闭连接
     def close(self):
-        if self.conn:
-            self.conn.close()
-            self.conn = None
+        for e in self.connPools:
+            e.close()
+        self.connPools = []
 
     def __repr__(self):
         return f'{self.name}({self.model})'
@@ -820,35 +890,46 @@ class SimpleAiProvider:
     #外部调用此函数即可调用简单聊天功能
     #message: 如果是文本，则使用各项默认参数
     #传入 list/dict 可以定制 role 等参数
+    #返回 respTxt, host(如果是多服务器)
     def chat(self, message):
         if not self.apiKey:
             raise ValueError(f'The api key is empty')
         name = self.name
         if name == "openai":
-            return self._openai_chat(message)
+            ret = self._openai_chat(message)
         elif name == "anthropic":
-            return self._anthropic_chat(message)
+            ret = self._anthropic_chat(message)
         elif name == "google":
-            return self._gemini_chat(message)
+            ret = self._gemini_chat(message)
         elif name == "xai":
-            return self._grok_chat(message)
+            ret = self._grok_chat(message)
         elif name == "mistral":
-            return self._mistral_chat(message)
+            ret = self._mistral_chat(message)
         elif name == 'groq':
-            return self._groq_chat(message)
+            ret = self._groq_chat(message)
         elif name == "alibaba":
-            return self._alibaba_chat(message)
+            ret = self._alibaba_chat(message)
         else:
             raise ValueError(f"Unsupported provider: {name}")
 
+        host = self.host if (len(self.connPools) > 1) else ''
+        return ret, host
+
     #openai的chat接口
     def _openai_chat(self, message, path='/v1/chat/completions'):
-        headers = {'Authorization': f"Bearer {self.apiKey}",
-            'Content-Type': 'application/json'}
-        payload = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": message}] if isinstance(message, str) else message
-        }
+        headers = {'Authorization': f'Bearer {self.apiKey}', 'Content-Type': 'application/json'}
+        if isinstance(message, str):
+            msg = [{"role": "user", "content": message}]
+        elif self.singleTurn: #手动拼接字符串
+            msgArr = ['Previous conversions:']
+            roleMap = {'system': 'background', 'assistant': 'Your response'}
+            msgArr.extend([f'{roleMap.get(e["role"], "I ask")}:\n{e["content"]}\n' for e in message[:-1]])
+            msgArr.append(f'\nPlease continue this conversation based on the previous information:\n')
+            msgArr.append(message[-1]['content'])
+            msg = [{"role": "user", "content": '\n'.join(msgArr)}]
+        else:
+            msg = message
+        payload = {"model": self.model, "messages": msg}
         data = self.post(path, payload, headers)
         return data["choices"][0]["message"]["content"]
 
@@ -958,6 +1039,8 @@ if __name__ == "__main__":
     #如果不是初始化并且指定了配置文件，则配置文件必须存在
     if not args.setup and cfgFile and not os.path.isfile(cfgFile):
         print('The file {} does not exist'.format(style(cfgFile, bold=True)))
+        print('')
+        userInput = input('Press return key to quit ')
     else:
         cfgFile = cfgFile or CONFIG_JSON
         if args.setup:
