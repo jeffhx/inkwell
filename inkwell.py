@@ -554,8 +554,14 @@ def updateTopic(client, msg=None):
 #给AI发请求，返回 AiResponse
 def fetchAiResponse(client, messages):
     host = ''
+    #把谈话上下文里面的错误信息剔除
+    msg = messages.copy()
+    for idx in range(len(msg)):
+        item = msg[idx]
+        if item['content'].startswith('Error: '):
+            msg[idx] = {'role': item['role'], 'content': ''}
     try:
-        respTxt, host = client.chat(messages)
+        respTxt, host = client.chat(msg)
     except:
         return AiResponse(success=False, error=loc_exc_pos('Error'), host=host)
     else:
@@ -822,7 +828,7 @@ class SimpleAiProvider:
             self.rpm = 2
         if self.context_size < 1000:
             self.context_size = 1000
-        #分析主机和url，保存为SplitResult(scheme,netloc,path,query,frament)元祖
+        #分析主机和url，保存为 SplitResult(scheme,netloc,path,query,frament)元祖
         #connPools每个元素为 [host_tuple, conn_obj]
         self.connPools = [[urlsplit(e if e.startswith('http') else 'https://' + e), None]
             for e in (apiHost or AI_LIST[name]['host']).replace(' ', '').split(';')]
@@ -842,20 +848,22 @@ class SimpleAiProvider:
     #创建长连接
     def createConnections(self):
         self.close()
-        self.connPools = []
-        for host in self._hosts:
+        for idx in range(len(self.connPools)):
+            host, e = self.connPools[idx]
+            if e:
+                e.close()
             #使用http.client.HTTPSConnection有一个好处是短时间多次对话只需要一次握手
             if host.scheme == 'https':
                 sslCtx = ssl._create_unverified_context()
-                self.connPools.append(http.client.HTTPSConnection(host.netloc, timeout=30, context=sslCtx))
+                self.connPools[idx][1] = http.client.HTTPSConnection(host.netloc, timeout=30, context=sslCtx)
             else:
-                self.connPools.append(http.client.HTTPConnection(host.netloc, timeout=30))
+                self.connPools[idx][1] = http.client.HTTPConnection(host.netloc, timeout=30)
         #尽量不修改connIdx，保证能轮询每个host
         if self.connIdx >= len(self.connPools):
             self.connIdx = 0
 
     #发起一个网络请求，返回json数据
-    def post(self, path, payload, headers, toJson=True):
+    def post(self, path, payload, headers, toJson=True) -> dict:
         #print(f'payload={payload}')
         #print(f'headers={headers}')
         retried = 0
@@ -868,6 +876,7 @@ class SimpleAiProvider:
                 conn.request('POST', url, json.dumps(payload), headers)
                 resp = conn.getresponse()
                 body = resp.read().decode("utf-8")
+                #print(resp.reason, ', ', body) #TODO
                 if not (200 <= resp.status < 300):
                     raise HttpResponseError(resp.status, resp.reason, body)
                 return json.loads(body) if toJson else body
@@ -880,9 +889,11 @@ class SimpleAiProvider:
 
     #关闭连接
     def close(self):
-        for e in self.connPools:
-            e.close()
-        self.connPools = []
+        for idx in range(len(self.connPools)): #[host_tuple, conn_obj]
+            host, e = self.connPools[idx]
+            if e:
+                e.close()
+                self.connPools[idx][1] = None
 
     def __repr__(self):
         return f'{self.name}({self.model})'
@@ -890,8 +901,8 @@ class SimpleAiProvider:
     #外部调用此函数即可调用简单聊天功能
     #message: 如果是文本，则使用各项默认参数
     #传入 list/dict 可以定制 role 等参数
-    #返回 respTxt, host(如果是多服务器)
-    def chat(self, message):
+    #返回 (respTxt, host)
+    def chat(self, message) -> (str, str):
         if not self.apiKey:
             raise ValueError(f'The api key is empty')
         name = self.name
@@ -921,11 +932,13 @@ class SimpleAiProvider:
         if isinstance(message, str):
             msg = [{"role": "user", "content": message}]
         elif self.singleTurn: #手动拼接字符串
-            msgArr = ['Previous conversions:']
+            msgArr = ['Previous conversions:\n']
             roleMap = {'system': 'background', 'assistant': 'Your response'}
             msgArr.extend([f'{roleMap.get(e["role"], "I ask")}:\n{e["content"]}\n' for e in message[:-1]])
             msgArr.append(f'\nPlease continue this conversation based on the previous information:\n')
+            msgArr.append("I ask:")
             msgArr.append(message[-1]['content'])
+            msgArr.append("You:\n")
             msg = [{"role": "user", "content": '\n'.join(msgArr)}]
         else:
             msg = message
