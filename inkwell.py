@@ -20,7 +20,7 @@ import os, sys, re, json, itertools, ssl, argparse
 import http.client
 from urllib.parse import urlsplit
 
-__Version__ = 'v1.1 (2024-12-04)'
+__Version__ = 'v1.2 (2024-12-06)'
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_JSON = f"{BASE_PATH}/config.json"
 HISTORY_JSON = "history.json"
@@ -382,7 +382,7 @@ def showMenu(client):
         if not userInput:
             replayConversation()
             break
-        elif userInput == 'q':
+        elif userInput == 'q' or userInput == 'Q':
             return 'quit'
         elif inputLen > 1 and userInput[0] == 'd' and userInput[1].isdigit(): #删除历史数据
             deleteHistory(parseRange(userInput[1:]))
@@ -447,6 +447,7 @@ def printAiResponse(resp):
         print(content.replace('\n\n', '\n').strip('\n'))
     else:
         print(resp.error)
+        sprint('Press r to resend the last chat', bold=True)
 
 #简单的处理markdown格式，用于在终端显示粗体斜体等效果
 def markdownToTerm(content):
@@ -554,11 +555,10 @@ def updateTopic(client, msg=None):
 #给AI发请求，返回 AiResponse
 def fetchAiResponse(client, messages):
     host = ''
-    #把谈话上下文里面的错误信息剔除
     msg = messages.copy()
     for idx in range(len(msg)):
         item = msg[idx]
-        if item['content'].startswith('Error: '):
+        if item['content'].startswith('Error: '): #把谈话上下文里面的错误信息剔除
             msg[idx] = {'role': item['role'], 'content': ''}
     try:
         respTxt, host = client.chat(msg)
@@ -621,7 +621,7 @@ def start(cfgFile):
         while not quitRequested:
             sys.stdin.flush()
             userInput = input("» ")
-            if userInput == 'q':
+            if userInput == 'q' or userInput == 'Q':
                 quitRequested = True
                 break
             elif userInput == '?':
@@ -632,20 +632,30 @@ def start(cfgFile):
                 if ret == 'quit':
                     quitRequested = True
                     break
-            elif userInput: #可以输入多行，逐行累加
-                msgArr.append(userInput)
-            elif msgArr: #输入一个空行并且之前已经有过输入，发送请求
-                msg = '\n'.join(msgArr)
-                msgArr = []
-                addMessage('user', msg)
-                if len(g_messages) == 2: #第一次交谈，使用用户输出的开头四个单词做为topic
-                    updateTopic(client, msg)
-                elif len(g_messages) == 4: #第三次交谈，使用ai总结谈话内容做为topic
-                    updateTopic(client)
-                resp = fetchAiResponse(client, g_messages)
-                addMessage('assistant', resp.content.strip() if resp.success else ('Error: ' + resp.error))
-                printAiResponse(resp)
-                printChatBubble('user', g_currTopic)
+            else:
+                msg = '\n'.join(msgArr).strip()
+                #输入r重发上一个请求
+                if userInput in ('r', 'R') and not msg and len(g_messages) > 2:
+                    userItem = g_messages[-2] #开头为背景prompt，之后user/assistant交替
+                    msg = userItem.get('content', '')
+                    userInput = ''
+                    for line in msg.splitlines():
+                        print(f'» {line}')
+                    print('')
+
+                if userInput: #可以输入多行，逐行累加
+                    msgArr.append(userInput)
+                elif msg: #输入一个空行并且之前已经有过输入，发送请求
+                    msgArr = []
+                    addMessage('user', msg)
+                    if len(g_messages) == 2: #第一次交谈，使用用户输出的开头四个单词做为topic
+                        updateTopic(client, msg)
+                    elif len(g_messages) == 4: #第三次交谈，使用ai总结谈话内容做为topic
+                        updateTopic(client)
+                    resp = fetchAiResponse(client, g_messages)
+                    addMessage('assistant', resp.content.strip() if resp.success else ('Error: ' + resp.error))
+                    printAiResponse(resp)
+                    printChatBubble('user', g_currTopic)
 
     client.close()
     #保存当前记录
@@ -830,37 +840,48 @@ class SimpleAiProvider:
             self.context_size = 1000
         #分析主机和url，保存为 SplitResult(scheme,netloc,path,query,frament)元祖
         #connPools每个元素为 [host_tuple, conn_obj]
-        self.connPools = [[urlsplit(e if e.startswith('http') else 'https://' + e), None]
+        self.connPools = [[urlsplit(e if e.startswith('http') else ('https://' + e)), None]
             for e in (apiHost or AI_LIST[name]['host']).replace(' ', '').split(';')]
         self.host = '' #当前正在使用的 netloc
         self.connIdx = 0
         self.createConnections()
 
-    @property
-    def conn(self):
-        ret = self.connPools[self.connIdx]
+    #自动获取列表中下一个连接对象，返回 (index, host tuple, con obj)
+    def nextConnection(self):
+        index = self.connIdx
         self.connIdx += 1
         if self.connIdx >= len(self.connPools):
             self.connIdx = 0
-        #print(f'Using {ret[0].host}') #TODO
-        return ret
+        host, conn = self.connPools[index]
+        return index, host, conn
 
     #创建长连接
+    #index: 如果传入一个整型，则只重新创建此索引的连接实例
     def createConnections(self):
-        self.close()
-        for idx in range(len(self.connPools)):
-            host, e = self.connPools[idx]
-            if e:
-                e.close()
-            #使用http.client.HTTPSConnection有一个好处是短时间多次对话只需要一次握手
-            if host.scheme == 'https':
-                sslCtx = ssl._create_unverified_context()
-                self.connPools[idx][1] = http.client.HTTPSConnection(host.netloc, timeout=30, context=sslCtx)
-            else:
-                self.connPools[idx][1] = http.client.HTTPConnection(host.netloc, timeout=30)
+        for index in range(len(self.connPools)):
+            self.createOneConnection(index)
+
         #尽量不修改connIdx，保证能轮询每个host
         if self.connIdx >= len(self.connPools):
             self.connIdx = 0
+
+    #创建一个对应索引的连接对象
+    def createOneConnection(self, index):
+        if not (0 <= index < len(self.connPools)):
+            return
+
+        host, e = self.connPools[index]
+        if e:
+            e.close()
+        #使用http.client.HTTPSConnection有一个好处是短时间多次对话只需要一次握手
+        if host.netloc.endswith('duckduckgo.com'):
+            conn = DuckOpenAi()
+        elif host.scheme == 'https':
+            sslCtx = ssl._create_unverified_context()
+            conn = http.client.HTTPSConnection(host.netloc, timeout=30, context=sslCtx)
+        else:
+            conn = http.client.HTTPConnection(host.netloc, timeout=30)
+        self.connPools[index][1] = conn
 
     #发起一个网络请求，返回json数据
     def post(self, path, payload, headers, toJson=True) -> dict:
@@ -869,7 +890,7 @@ class SimpleAiProvider:
         retried = 0
         while retried < 2:
             try:
-                host, conn = self.conn #(host_tuple, conn_obj)
+                index, host, conn = self.nextConnection() #(index, host_tuple, conn_obj)
                 self.host = host.netloc
                 #拼接路径
                 url = '/' + host.path.strip('/') + (('?' + host.query) if host.query else '') + path.lstrip('/')
@@ -884,16 +905,24 @@ class SimpleAiProvider:
                 if retried:
                     raise
                 #print("Connection issue, retrying:", e)
-                self.createConnections()
+                self.createOneConnection(index)
                 retried += 1
 
     #关闭连接
-    def close(self):
-        for idx in range(len(self.connPools)): #[host_tuple, conn_obj]
-            host, e = self.connPools[idx]
+    #index: 如果传入一个整型，则只关闭对应索引的连接
+    def close(self, index=None):
+        connNum = len(self.connPools)
+        if isinstance(index, int) and (0 <= index < connNum):
+            host, e = self.connPools[index]
             if e:
                 e.close()
-                self.connPools[idx][1] = None
+                self.connPools[index][1] = None
+
+        for index in range(connNum):
+            host, e = self.connPools[index] #[host_tuple, conn_obj]
+            if e:
+                e.close()
+                self.connPools[index][1] = None
 
     def __repr__(self):
         return f'{self.name}({self.model})'
@@ -923,8 +952,7 @@ class SimpleAiProvider:
         else:
             raise ValueError(f"Unsupported provider: {name}")
 
-        host = self.host if (len(self.connPools) > 1) else ''
-        return ret, host
+        return ret, self.host
 
     #openai的chat接口
     def _openai_chat(self, message, path='/v1/chat/completions'):
@@ -1002,6 +1030,110 @@ class SimpleAiProvider:
     #通义千问
     def _alibaba_chat(self, message):
         return self._openai_chat(message, path='/compatible-mode/v1/chat/completions')
+
+#duckduckgo转openai格式的封装器，外部接口兼容http.HTTPConnection
+class DuckOpenAi:
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:91.0) Gecko/20100101 Firefox/91.0",
+        "Accept": "text/event-stream",
+        "Accept-Language": "de,en-US;q=0.7,en;q=0.3",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": "https://duckduckgo.com/",
+        "Content-Type": "application/json",
+        "Origin": "https://duckduckgo.com",
+        "Connection": "keep-alive",
+        "Cookie": "dcm=1",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+        "Pragma": "no-cache",
+        "TE": "trailers",
+    }
+    HOST = "duckduckgo.com"
+    STATUS_URL = "/duckchat/v1/status"
+    CHAT_URL = "/duckchat/v1/chat"
+
+    #模拟HTTPConnection实例 getresponse() 返回的的结果
+    class DuckResponse:
+        def __init__(self, status, headers, data, reason=''):
+            self.status = status
+            self.headers = headers
+            self.data = data
+            self.reason = reason
+        def read(self):
+            return self.data
+
+    def __init__(self):
+        self.conn = None
+        self._payload = {}
+        self.createConnection()
+
+    def close(self):
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+
+    def createConnection(self):
+        self.close()
+        sslCtx = ssl._create_unverified_context()
+        self.conn = http.client.HTTPSConnection('duckduckgo.com', timeout=30, context=sslCtx)
+        return self.conn
+
+    #使用底层接口实际发送网络请求
+    #返回元祖 (status, headers, body)
+    def _send(self, url, heads, payload=None, method='GET'):
+        retried = 0
+        headers = self.HEADERS
+        headers.update(heads)
+        while retried < 2:
+            try:
+                self.conn.request(method, url, payload, headers)
+                resp = self.conn.getresponse()
+                return resp.status, resp.headers, resp.read()
+            except (http.client.CannotSendRequest, http.client.RemoteDisconnected) as e:
+                if retried:
+                    raise
+                #print("Connection issue, retrying:", e)
+                self.createConnection()
+                retried += 1
+        return 500, {}, b''
+
+    #只是暂存结果，在 getresponse() 才实际发起请求
+    def request(self, method, url, payload=None, headers=None):
+        self._payload = json.loads(payload or '{}')
+
+    #发起请求，返回 DuckResponse 实例
+    def getresponse(self):
+        status, heads, body = self._send(self.STATUS_URL, {"x-vqd-accept": "1"})
+        if status != 200:
+            return self.DuckResponse(status, heads, body)
+            
+        vqd4 = heads.get("x-vqd-4", '')
+        payload = {"model": "gpt-4o-mini", "messages": self._payload.get('messages', [])}
+
+        status, heads, body = self._send(self.CHAT_URL, {"x-vqd-4": vqd4}, json.dumps(payload), 'POST')
+        if status != 200:
+            return self.DuckResponse(status, heads, body)
+
+        content = id_ = model = ""
+        created = 0
+        for line in body.decode('utf-8').splitlines():
+            if line.startswith("data: "):
+                chunk = line[6:]
+                if chunk == "[DONE]":
+                    break
+                try:
+                    data = json.loads(chunk)
+                    id_ = data.get("id", id_)
+                    created = data.get("created", created)
+                    model = data.get("model", model)
+                    content += data.get("message", "")
+                except json.JSONDecodeError:
+                    continue
+        body = {"id": id_, "object": "chat.completion", "created": created, "model": model,
+            "choices": [{ "index": 0, "finish_reason": "stop",
+                "message": {"role": "assistant", "content": content},},],}
+        return self.DuckResponse(status, heads, json.dumps(body).encode('utf-8'))
 
 #获取发生异常时的文件名和行号，添加到自定义错误信息后面
 #此函数必须要在异常后调用才有意义，否则只是简单的返回传入的参数
