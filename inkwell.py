@@ -20,13 +20,14 @@ import os, sys, re, json, itertools, ssl, argparse
 import http.client
 from urllib.parse import urlsplit
 
-__Version__ = 'v1.2 (2024-12-06)'
+__Version__ = 'v1.3 (2024-12-09)'
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_JSON = f"{BASE_PATH}/config.json"
-HISTORY_JSON = "history.json"
+HISTORY_JSON = "history.json" #历史文件会自动跟随程序传入的配置文件路径
+PROMPTS_FILE = f"{BASE_PATH}/prompts.txt"
 
 #默认的AI角色配置
-CUSTOM_INSTRUCTIONS = """You are a helpful personal assistant.
+DEFAULT_PROMPT = """You are a helpful personal assistant.
 - Please note that your answers will be displayed on the terminal.
 - So keep answers short as possible and use a suitable format for printing on a terminal."""
 
@@ -50,12 +51,14 @@ _TERMINAL_COLORS = {"black": 30, "red": 31, "green": 32, "yellow": 33, "blue": 3
 
 DEFAULT_TOPIC = 'new conversation'
 DEFAULT_CFG = {"provider": "google", "model": "gemini-1.5-flash", "api_key": "", "api_host": "", "display_style": "markdown",
-    "chat_type": "multi_turn", "token_limit": 4000, "max_history": 10, "custom_instructions": ""}
+    "chat_type": "multi_turn", "token_limit": 4000, "max_history": 10, "prompt": "custom", "custom_prompt": ""}
 
 #为简化代码，设置几个全局变量
 g_cfgFile = ''
 g_config = {}
 g_currTopic = ''
+g_prompts = {}
+g_currPrompt = ''
 g_messages = []
 g_history = []
 g_tokenNum = 0
@@ -114,7 +117,7 @@ def sprint(txt, **kwargs):
     print(style(txt, **kwargs))
 
 #获取配置数据，这个函数返回的配置字典是经过校验的，里面的数据都是合法的
-def getConfig(cfgFile=None):
+def loadConfig(cfgFile=None):
     global g_cfgFile, g_config
     g_cfgFile = cfgFile or CONFIG_JSON
     cfg = {}
@@ -156,37 +159,64 @@ def getConfig(cfgFile=None):
     g_config = cfg
     return cfg
 
-#获取历史对话信息
-def getHistory():
+#将配置保存到配置文件
+def saveConfig(cfgFile, cfg):
+    try:
+        with open(cfgFile, 'w', encoding='utf-8') as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print('Failed to write {}: {}\n'.format(style(cfgFile, bold=True), str(e)))
+    else:
+        print('Config have been saved to file: {}\n'.format(style(cfgFile, bold=True)))
+
+#加载预置的prompt列表
+def loadPrompts():
+    global g_prompts
+    if g_prompts or not os.path.isfile(PROMPTS_FILE):
+        return g_prompts
+
+    g_prompts = {}
+    try:
+        with open(PROMPTS_FILE, 'r', encoding='utf-8') as f:
+            entries = [entry.partition('\n') for e in f.read().split('</>') if (entry := e.strip())]
+            for name, _, content in entries:
+                name = name.strip()
+                content = content.strip()
+                if name and content:
+                    g_prompts[name] = content
+    except Exception as e:
+        print(f'Failed to read {style(PROMPTS_FILE, bold=True)}: {e}')
+    return g_prompts
+
+#加载历史对话信息
+def loadHistory():
     global g_history, g_config
-    history = []
     if g_config.get('max_history', 10) <= 0:
-        return history
+        return g_history
 
     hisPath = os.path.dirname(g_cfgFile)
     hisFile = os.path.join(hisPath, HISTORY_JSON)
     if os.path.isfile(hisFile):
         try:
             with open(hisFile, 'r', encoding='utf-8') as f:
-                history = json.load(f)
-            if not isinstance(history, list):
-                history = []
+                g_history = json.load(f)
+            if not isinstance(g_history, list):
+                g_history = []
         except:
             pass
-    return history
+    return g_history
 
-#将一条数据添加到历史对话
-def addHistory(client, topic, messages):
-    global g_history, g_config
+#将当前会话添加到历史对话列表
+def addCurrentConvToHistory(client):
+    global g_history, g_config, g_currPrompt, g_currTopic, g_messages
     maxHisotry = g_config.get('max_history', 10)
-    if maxHisotry <= 0:
+    if maxHisotry <= 0 or not g_currTopic:
         return
 
-    if g_history and g_history[-1]['topic'] == topic:
-        g_history[-1]['messages'] = messages[1:] #第一条消息为背景prompt
+    if g_history and g_history[-1]['topic'] == g_currTopic:
+        g_history[-1]['messages'] = g_messages[1:] #第一条消息为背景prompt
     else:
-        convType = 'single_turn' if client.singleTurn else 'multi_turn'
-        g_history.append({'topic': topic, 'chat_type': convType, 'messages': messages[1:]})
+        g_history.append({'topic': g_currTopic, 'prompt': g_currPrompt, 'messages': g_messages[1:]})
     if len(g_history) > maxHisotry:
         g_history = g_history[-maxHisotry:]
     saveHistory(g_history)
@@ -356,9 +386,12 @@ def parseRange(txt):
             ret.append(int(item[0]))
     return ret
 
-#显示菜单，根据用户选择进行相应的处理
-def showMenu(client):
-    global g_currTopic, g_messages, g_history
+#显示菜单项
+def showMenu():
+    global g_currTopic, g_messages, g_history, g_currPrompt
+    print('')
+    sprint(' Current prompt ', fg='white', bg='yellow', bold=True)
+    print(g_currPrompt)
     print('')
     sprint(' Current conversation ', fg='white', bg='yellow', bold=True)
     print(g_currTopic)
@@ -369,20 +402,24 @@ def showMenu(client):
     else:
         for idx, item in enumerate(g_history, 1):
             sprint('{:2d}. {}'.format(idx, item.get('topic', 'Unknown topic'), fg='bright_black'))
-
     print('')
-    sprint(' Choose a conversation to continue, OR ', fg='white', bg='yellow', bold=True)
-    print('[   0   ] {}'.format(style('start a new conversation', fg='bright_black')))
-    print('[ dnum  ] {}'.format(style('delete one or range conversations', fg='bright_black')))
-    print('[ enum  ] {}'.format(style('export one or range conversations', fg='bright_black')))
-    print('[ Enter ] {}'.format(style('return to the current one', fg='bright_black')))
+
+#显示菜单，根据用户选择进行相应的处理
+def processMenu(client):
+    global g_currTopic, g_messages, g_history, g_currPrompt
+    showMenu()
     while True:
-        userInput = input('» ')
+        userInput = input('[num, c, d, e, p, q, ?] » ').lower()
         inputLen = len(userInput)
-        if not userInput:
+        if userInput == 'c': #回到当前对话
             replayConversation()
             break
-        elif userInput == 'q' or userInput == 'Q':
+        elif userInput == '?': #显示命令帮助
+            showCmdList()
+        elif userInput == 'p': #选择一个prompt
+            switchPrompt()
+            showMenu()
+        elif userInput == 'q': #退出
             return 'quit'
         elif inputLen > 1 and userInput[0] == 'd' and userInput[1].isdigit(): #删除历史数据
             deleteHistory(parseRange(userInput[1:]))
@@ -395,33 +432,132 @@ def showMenu(client):
             else:
                 print('The filename is empty, canceled')
         elif userInput == '0': #开始一个新的对话
-            if g_currTopic != DEFAULT_TOPIC:
-                addHistory(client, g_currTopic, g_messages)
-            g_messages = g_messages[:1] #第一个元素是背景信息
-            g_currTopic = DEFAULT_TOPIC
-            g_tokenNum = 0
+            startNewConversation(client)
             print(' NEW CONVERSATION STARTED')
             printChatBubble('user', g_currTopic)
             break
         elif userInput.isdigit(): #切换到其他对话
-            index = int(userInput) #根据用户直觉，这个数值从1开始
-            if 1 <= index <= len(g_history):
-                msg = g_history.pop(index - 1)
-                if g_currTopic != DEFAULT_TOPIC:
-                    addHistory(client, g_currTopic, g_messages)
-                g_messages = g_messages[:1] + msg.get('messages', [])
-                g_currTopic = msg.get('topic', DEFAULT_TOPIC)
-                g_tokenNum = calculateToken(g_messages)
-                replayConversation(msg.get('chat_type'))
+            if 1 <= (index := int(userInput)) <= len(g_history):
+                switchConversation(client, g_history.pop(index - 1))
+                replayConversation()
                 break
             else:
                 print('The conversation number is out of range')
 
+#开始一个新的会话
+def startNewConversation(client):
+    global g_config, g_currPrompt, g_currTopic, g_messages, g_tokenNum
+    if g_currTopic != DEFAULT_TOPIC:
+        addCurrentConvToHistory(client)
+    g_messages = g_messages[:1] #第一个元素是背景信息
+    g_currTopic = DEFAULT_TOPIC
+    g_currPrompt = g_config.get('prompt')
+    promptText = getPromptText(g_currPrompt)
+    if promptText == DEFAULT_PROMPT:
+        g_currPrompt = 'default'
+    elif promptText == g_config.get('custom_prompt'):
+        g_currPrompt = 'custom'
+    g_messages[0]['content'] = promptText
+    g_tokenNum = 0
+
+#切换到其他会话
+#client: AI封装实例
+#msg: 目的消息字典
+def switchConversation(client, msg):
+    global g_currTopic, g_currPrompt, g_messages, g_tokenNum
+    if g_currTopic != DEFAULT_TOPIC: #先保存当前对话
+        addCurrentConvToHistory(client)
+    g_messages = g_messages[:1] + msg.get('messages', [])
+    g_currTopic = msg.get('topic', DEFAULT_TOPIC)
+    g_currPrompt = msg.get('prompt')
+    promptText = getPromptText(g_currPrompt)
+    if promptText == DEFAULT_PROMPT:
+        g_currPrompt = 'default'
+    elif promptText == g_config.get('custom_prompt'):
+        g_currPrompt = 'custom'
+    g_messages[0]['content'] = promptText
+    g_tokenNum = calculateToken(g_messages)
+    
+#根据prompt名字，返回prompt具体文本
+def getPromptText(promptName):
+    global g_config
+    prompt = ''
+    if (not promptName or promptName == 'custom') and (customPrompt := g_config.get('custom_prompt')):
+        prompt = customPrompt
+    elif promptName != 'default':
+        prompt = loadPrompts().get(promptName)
+
+    return prompt if prompt else DEFAULT_PROMPT
+
+#显示菜单，选择一个会话使用的prompt
+def switchPrompt():
+    global g_currPrompt, g_prompts, g_config, g_messages
+    loadPrompts()
+
+    print('')
+    sprint(' Current prompt ', fg='white', bg='yellow', bold=True)
+    print(g_currPrompt)
+    print('')
+    sprint(' Available prompts ', fg='white', bg='yellow', bold=True)
+    promptNames = ['default', 'custom', *g_prompts.keys()]
+    print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(promptNames, 1)))
+    print('')
+    while True:
+        userInput = input('[q 0 num] » ')
+        if userInput == 'q':
+            break
+        elif not userInput.isdigit():
+            continue
+        index = int(userInput)
+        if index == 0: #显示当前prompt具体内容
+            print(g_messages[0]['content'])
+            print('')
+            continue
+        if 1 <= index <= len(promptNames):
+            if index == 1:
+                g_currPrompt = 'default'
+                prompt = DEFAULT_PROMPT
+            elif index == 2:
+                prevPrompt = g_config.get('custom_prompt', '')
+                sprint('Current custom prompt:', bold=True)
+                print(prevPrompt)
+                print('')
+                sprint('Provide a new curstom prompt or Enter to use current:', bold=True)
+                newArr = []
+                while (text := input('» ')):
+                    newArr.append(text)
+                prompt = '\n'.join(newArr) or prevPrompt
+                if prompt:
+                    g_currPrompt = 'custom'
+            else:
+                g_currPrompt = promptNames[index - 1]
+                prompt = g_prompts.get(g_currPrompt)
+
+            if prompt: #消息列表第一项为系统prompt
+                if g_currPrompt == 'custom':
+                    g_config['custom_prompt'] = prompt
+                g_config['prompt'] = g_currPrompt
+                saveConfig(g_cfgFile, g_config)
+                g_messages[0]['content'] = prompt
+                sprint(f'Prompt set to: {g_currPrompt}', bold=True)
+            break
+
+#显示命令列表和帮助
+def showCmdList():
+    print('')
+    sprint(' Commands ', fg='white', bg='yellow', bold=True)
+    print('[   0  ] {}'.format(style('start a new conversation', fg='bright_black')))
+    print('[  num ] {}'.format(style('choose a conversation to continue', fg='bright_black')))
+    print('[   c  ] {}'.format(style('continue current conversation', fg='bright_black')))
+    print('[ dnum ] {}'.format(style('delete one or range conversations', fg='bright_black')))
+    print('[ enum ] {}'.format(style('export one or range conversations', fg='bright_black')))
+    print('[   p  ] {}'.format(style('choose another prompt', fg='bright_black')))
+    print('[   q  ] {}'.format(style('quit the program', fg='bright_black')))
+    print('[   ?  ] {}'.format(style('show the command list', fg='bright_black')))
+
 #重新输出对话信息，用于切换对话历史
-def replayConversation(chatType):
+def replayConversation():
     global g_currTopic, g_messages
-    #if chatType == 'single_turn':
-    #    sprint('These conversations are based on a single-turn conversation model.', bold=True)
     for item in g_messages[1:]:
         if item.get('role') == 'user':
             printUserMessage(item.get('content'))
@@ -584,10 +720,10 @@ def addMessage(role, msg):
 #主程序入口
 #cfgFile: json配置文件名，为空则使用默认值
 def start(cfgFile):
-    global g_currTopic, g_messages, g_history
+    global g_currTopic, g_messages, g_history, g_currPrompt
     
     #获取配置数据
-    cfg = getConfig(cfgFile)
+    cfg = loadConfig(cfgFile)
     if cfg is None:
         return
 
@@ -603,15 +739,17 @@ def start(cfgFile):
     provider = cfg.get('provider')
     model = cfg.get('model')
     singleTurn = bool(cfg.get('chat_type') == 'single_turn')
+
     client = SimpleAiProvider(provider, apiKey=apiKey, model=model, apiHost=cfg.get('api_host'),
         singleTurn=singleTurn)
+    loadHistory()
+    g_messages = [{"role": "system", "content": ''}] #role: system, user, assistant
+    startNewConversation(client)
+
     print('Model: {}'.format(style(f'{provider}/{model}', bold=True)))
+    print('Prompt: {}'.format(style(g_currPrompt, bold=True)))
     print('Empty line to send, ? to menu, q to quit')
-    
-    g_history = getHistory()
-    g_currTopic = DEFAULT_TOPIC
-    #role 有三种可能值：system, user, assistant
-    g_messages = [{"role": "system", "content": cfg.get('custom_instructions') or CUSTOM_INSTRUCTIONS}]
+
     quitRequested = False
     #print('')
     #sprint('Your are using a single-turn conversation model', bold=True)
@@ -628,7 +766,7 @@ def start(cfgFile):
                 msgArr = []
                 ret = 'reshow'
                 while ret == 'reshow':
-                    ret = showMenu(client)
+                    ret = processMenu(client)
                 if ret == 'quit':
                     quitRequested = True
                     break
@@ -660,7 +798,7 @@ def start(cfgFile):
     client.close()
     #保存当前记录
     if g_currTopic != DEFAULT_TOPIC:
-        addHistory(client, g_currTopic, g_messages)
+        addCurrentConvToHistory(client)
 
 #交互式配置过程
 def setup(cfgFile):
@@ -718,13 +856,10 @@ def setup(cfgFile):
     print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(turns, 1)))
     while True:
         userInput = input('» [1] ') or '1'
-        if userInput == '1':
-            cfg['chat_type'] = 'multi_turn'
+        if userInput in ('1', '2'):
+            cfg['chat_type'] = 'multi_turn' if (userInput == '1') else 'single_turn'
             break
-        elif userInput == '2':
-            cfg['chat_type'] = 'single_turn'
-            break
-    
+        
     #Conversation token limit
     print('')
     sprint(' Conversation token limit ', fg='white', bg='yellow', bold=True)
@@ -745,19 +880,16 @@ def setup(cfgFile):
             cfg['max_history'] = int(userInput)
             break
 
-    #custom_instructions
+    #配置自定义的prompt
     print('')
-    sprint(' Custom instructions (optional) ', fg='white', bg='yellow', bold=True)
-    userInput = input('» ')
-    cfg['custom_instructions'] = userInput.replace('\\n', '\n')
+    sprint(' Custom prompt (optional) ', fg='white', bg='yellow', bold=True)
+    prompts = []
+    while (userInput := input('» ')):
+        prompts.append(userInput)
+    cfg['prompt'] = '' #prompt是prompts.txt里面某一个prompt的标题
+    cfg['custom_prompt'] = '\n'.join(prompts)
 
-    try:
-        with open(cfgFile, 'w', encoding='utf-8') as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print('Failed to write {}: {}\n'.format(style(cfgFile, bold=True), str(e)))
-    else:
-        print('Setup finished, config file: {}\n'.format(style(cfgFile, bold=True)))
+    saveConfig(cfgFile, cfg)
 
 #------------------------------------------------------------
 #开始为AI适配器类
