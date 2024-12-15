@@ -5,9 +5,10 @@
 1. Python >= 3.8
 2. 不依赖任何第三方库
 3. 支持多个api服务器自动轮换，规避流量限制
-4. 支持终端显示格式化的markdown
+4. 支持终端显示格式化后的markdown文本
+5. 支持将会话历史导出为格式良好的电子书
 用法：
-1. 使用命令行参数 --setup 开始交互式的初始化和配置
+1. 使用命令行参数 -s 或 --setup 开始交互式的初始化和配置
 2. 不带参数执行，自动使用同一目录下的配置文件 config.json，如果没有则自动新建一个默认模板
 3. 如果需要不同的配置，可以传入参数 python inkwell.py --config path/to/config.json
 4. 在kindle上使用时可以在kterm的menu.json里面添加一个项目，action值为：
@@ -20,7 +21,7 @@ import os, sys, re, json, itertools, ssl, argparse
 import http.client
 from urllib.parse import urlsplit
 
-__Version__ = 'v1.3 (2024-12-09)'
+__Version__ = 'v1.4 (2024-12-14)'
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_JSON = f"{BASE_PATH}/config.json"
 HISTORY_JSON = "history.json" #历史文件会自动跟随程序传入的配置文件路径
@@ -33,7 +34,7 @@ DEFAULT_PROMPT = """You are a helpful personal assistant.
 
 #获取谈话主题的prompt
 PROMPT_GET_TOPIC = """Please give this conversation a short title.
-- Hard limit of 4 words.
+- Hard limit of 5 words.
 - Don't mention yourself in it.
 - Don't use any special characters.
 - Don't use any capital letters.
@@ -61,7 +62,6 @@ g_prompts = {}
 g_currPrompt = ''
 g_messages = []
 g_history = []
-g_tokenNum = 0
 
 #AI响应的结构封装
 class AiResponse:
@@ -446,10 +446,10 @@ def processMenu(client):
 
 #开始一个新的会话
 def startNewConversation(client):
-    global g_config, g_currPrompt, g_currTopic, g_messages, g_tokenNum
+    global g_config, g_currPrompt, g_currTopic, g_messages
     if g_currTopic != DEFAULT_TOPIC:
         addCurrentConvToHistory(client)
-    g_messages = g_messages[:1] #第一个元素是背景信息
+    g_messages = g_messages[:1] #第一个元素是系统Prompt，要一直保留
     g_currTopic = DEFAULT_TOPIC
     g_currPrompt = g_config.get('prompt')
     promptText = getPromptText(g_currPrompt)
@@ -458,13 +458,12 @@ def startNewConversation(client):
     elif promptText == g_config.get('custom_prompt'):
         g_currPrompt = 'custom'
     g_messages[0]['content'] = promptText
-    g_tokenNum = 0
-
+    
 #切换到其他会话
 #client: AI封装实例
 #msg: 目的消息字典
 def switchConversation(client, msg):
-    global g_currTopic, g_currPrompt, g_messages, g_tokenNum
+    global g_currTopic, g_currPrompt, g_messages
     if g_currTopic != DEFAULT_TOPIC: #先保存当前对话
         addCurrentConvToHistory(client)
     g_messages = g_messages[:1] + msg.get('messages', [])
@@ -476,7 +475,6 @@ def switchConversation(client, msg):
     elif promptText == g_config.get('custom_prompt'):
         g_currPrompt = 'custom'
     g_messages[0]['content'] = promptText
-    g_tokenNum = calculateToken(g_messages)
     
 #根据prompt名字，返回prompt具体文本
 def getPromptText(promptName):
@@ -580,7 +578,7 @@ def printAiResponse(resp):
     if resp.success:
         disStyle = g_config.get('display_style', 'markdown')
         content = resp.content if disStyle == 'plaintext' else markdownToTerm(resp.content)
-        print(content.replace('\n\n', '\n').strip('\n'))
+        print(content.strip())
     else:
         print(resp.error)
         sprint('Press r to resend the last chat', bold=True)
@@ -678,44 +676,47 @@ def printChatBubble(role, topic=''):
 
 #更新谈话主题
 def updateTopic(client, msg=None):
-    global g_currTopic
-    if msg:
+    global g_currTopic, g_messages
+    if msg: #直接在msg字符串上截取
         words = msg.replace('\n', ' ').replace('"', ' ').replace("'", ' ').split(' ')[:4]
         g_currTopic = ' '.join(words)[:30].strip() #限制总长度不超过30字节
     else: #让AI总结
         messages = g_messages + [{"role": "user", "content": PROMPT_GET_TOPIC}]
         resp = fetchAiResponse(client, messages)
         if resp.success:
-            g_currTopic = resp.content.replace('`', '').replace('"', '').replace('\n', '')
+            g_currTopic = resp.content.replace('`', '').replace('"', '').replace('\n', '')[:30]
 
 #给AI发请求，返回 AiResponse
 def fetchAiResponse(client, messages):
     host = ''
-    msg = messages.copy()
-    for idx in range(len(msg)):
-        item = msg[idx]
-        if item['content'].startswith('Error: '): #把谈话上下文里面的错误信息剔除
-            msg[idx] = {'role': item['role'], 'content': ''}
+    #if client.name == 'perplexity':
+    #    print('Searching...')
     try:
-        respTxt, host = client.chat(msg)
+        respTxt, host = client.chat(getTrimmedChat(messages))
     except:
         return AiResponse(success=False, error=loc_exc_pos('Error'), host=host)
     else:
         return AiResponse(success=True, content=respTxt, host=host)
 
-#统计当前的token数，（现在计算的是字节数）
-def calculateToken(messages):
-    return sum(len(item['content']) for item in messages[1:])
-
-#添加一条消息到消息历史
-def addMessage(role, msg):
-    global g_tokenNum, g_config
-    g_messages.append({"role": role, "content": msg})
-    g_tokenNum += len(msg)
-    limit = g_config.get("token_limit", 4000)
-    if g_tokenNum > limit:
-        while (g_tokenNum := calculateToken(g_messages)) > limit:
-            g_messages.pop(1)
+#从消息历史中截取符合token长度要求的最近一部分会话，用于发送给AI服务器
+#返回一个新的列表
+def getTrimmedChat(messages: list):
+    global g_config
+    if not messages:
+        return messages
+    limit = int(g_config.get("token_limit", 4000) * 3) #简化token计算公式：字节数/3
+    currLen = len(messages[0]['content']) + 20 # 20='role'/'system'/symbols:[]{},""
+    newMsgs = []
+    for idx in range(len(messages) - 1, 0, -1):
+        role = messages[idx]['role']
+        content = messages[idx]['content']
+        if content.startswith('Error: '): #把谈话上下文里面的错误信息剔除
+            content = ''
+        currLen += len(content) + 20
+        if currLen > limit:
+            break
+        newMsgs.append({'role': role, 'content': content})
+    return messages[:1] + newMsgs[::-1]
 
 #主程序入口
 #cfgFile: json配置文件名，为空则使用默认值
@@ -785,13 +786,14 @@ def start(cfgFile):
                     msgArr.append(userInput)
                 elif msg: #输入一个空行并且之前已经有过输入，发送请求
                     msgArr = []
-                    addMessage('user', msg)
+                    g_messages.append({"role": 'user', "content": msg})
                     if len(g_messages) == 2: #第一次交谈，使用用户输出的开头四个单词做为topic
                         updateTopic(client, msg)
                     elif len(g_messages) == 4: #第三次交谈，使用ai总结谈话内容做为topic
                         updateTopic(client)
                     resp = fetchAiResponse(client, g_messages)
-                    addMessage('assistant', resp.content.strip() if resp.success else ('Error: ' + resp.error))
+                    respText = resp.content.strip() if resp.success else ('Error: ' + resp.error)
+                    g_messages.append({"role": 'assistant', "content": respText})
                     printAiResponse(resp)
                     printChatBubble('user', g_currTopic)
 
@@ -929,6 +931,10 @@ AI_LIST = {
         {'name': 'llama3-70b-8192', 'rpm': 30, 'context': 8000},
         {'name': 'llama3-8b-8192', 'rpm': 30, 'context': 8000},
         {'name': 'mixtral-8x7b-32768', 'rpm': 30, 'context': 32000},],},
+    'perplexity': {'host': 'https://api.perplexity.ai', 'models': [
+        {'name': 'llama-3.1-sonar-small-128k-online', 'rpm': 60, 'context': 128000},
+        {'name': 'llama-3.1-sonar-large-128k-online', 'rpm': 60, 'context': 128000},
+        {'name': 'llama-3.1-sonar-huge-128k-online', 'rpm': 60, 'context': 128000},],},
     'alibaba': {'host': 'https://dashscope.aliyuncs.com', 'models': [
         {'name': 'qwen-turbo', 'rpm': 60, 'context': 128000}, #其实支持100万
         {'name': 'qwen-plus', 'rpm': 60, 'context': 128000},
@@ -1010,9 +1016,9 @@ class SimpleAiProvider:
             conn = DuckOpenAi()
         elif host.scheme == 'https':
             sslCtx = ssl._create_unverified_context()
-            conn = http.client.HTTPSConnection(host.netloc, timeout=30, context=sslCtx)
+            conn = http.client.HTTPSConnection(host.netloc, timeout=60, context=sslCtx)
         else:
-            conn = http.client.HTTPConnection(host.netloc, timeout=30)
+            conn = http.client.HTTPConnection(host.netloc, timeout=60)
         self.connPools[index][1] = conn
 
     #发起一个网络请求，返回json数据
@@ -1079,6 +1085,8 @@ class SimpleAiProvider:
             ret = self._mistral_chat(message)
         elif name == 'groq':
             ret = self._groq_chat(message)
+        elif name == 'perplexity':
+            ret = self._perplexity_chat(message)
         elif name == "alibaba":
             ret = self._alibaba_chat(message)
         else:
@@ -1091,14 +1099,14 @@ class SimpleAiProvider:
         headers = {'Authorization': f'Bearer {self.apiKey}', 'Content-Type': 'application/json'}
         if isinstance(message, str):
             msg = [{"role": "user", "content": message}]
-        elif self.singleTurn: #手动拼接字符串
+        elif self.singleTurn: #将多轮对话手动拼接为单一轮对话
             msgArr = ['Previous conversions:\n']
-            roleMap = {'system': 'background', 'assistant': 'Your response'}
-            msgArr.extend([f'{roleMap.get(e["role"], "I ask")}:\n{e["content"]}\n' for e in message[:-1]])
+            roleMap = {'system': 'background', 'assistant': 'Your responsed'}
+            msgArr.extend([f'{roleMap.get(e["role"], "I asked")}:\n{e["content"]}\n' for e in message[:-1]])
             msgArr.append(f'\nPlease continue this conversation based on the previous information:\n')
             msgArr.append("I ask:")
             msgArr.append(message[-1]['content'])
-            msgArr.append("You:\n")
+            msgArr.append("You Response:\n")
             msg = [{"role": "user", "content": '\n'.join(msgArr)}]
         else:
             msg = message
@@ -1159,6 +1167,10 @@ class SimpleAiProvider:
     def _groq_chat(self, message):
         return self._openai_chat(message, path='/openai/v1/chat/completions')
 
+    #perplexity的chat接口
+    def _perplexity_chat(self, message):
+        return self._openai_chat(message, path='/chat/completions')
+
     #通义千问
     def _alibaba_chat(self, message):
         return self._openai_chat(message, path='/compatible-mode/v1/chat/completions')
@@ -1208,7 +1220,7 @@ class DuckOpenAi:
     def createConnection(self):
         self.close()
         sslCtx = ssl._create_unverified_context()
-        self.conn = http.client.HTTPSConnection('duckduckgo.com', timeout=30, context=sslCtx)
+        self.conn = http.client.HTTPSConnection('duckduckgo.com', timeout=60, context=sslCtx)
         return self.conn
 
     #使用底层接口实际发送网络请求
