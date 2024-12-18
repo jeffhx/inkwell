@@ -21,7 +21,7 @@ import os, sys, re, json, itertools, ssl, argparse
 import http.client
 from urllib.parse import urlsplit
 
-__Version__ = 'v1.4 (2024-12-14)'
+__Version__ = 'v1.4.1 (2024-12-18)'
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_JSON = f"{BASE_PATH}/config.json"
 HISTORY_JSON = "history.json" #历史文件会自动跟随程序传入的配置文件路径
@@ -807,11 +807,16 @@ def setup(cfgFile):
     cfg = {}
     providers = list(AI_LIST.keys())
     print('')
+    sprint('Start inkwell config. Press q to abort.', bold=True)
+    print('')
     sprint(' Providers ', fg='white', bg='yellow', bold=True)
     print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(providers, 1)))
     models = []
     while True:
-        if '1' <= (userInput := input('» ')) <= str(len(providers)):
+        userInput = input('» ')
+        if userInput == 'q':
+            return
+        if '1' <= userInput <= str(len(providers)):
             cfg['provider'] = provider = providers[int(userInput) - 1]
             models = [item['name'] for item in AI_LIST[provider]['models']]
             break
@@ -821,7 +826,10 @@ def setup(cfgFile):
     sprint(' Models ', fg='white', bg='yellow', bold=True)
     print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(models, 1)))
     while True:
-        if '1' <= (userInput := input('» ')) <= str(len(models)):
+        userInput = input('» ')
+        if userInput == 'q':
+            return
+        if '1' <= userInput <= str(len(models)):
             cfg['model'] = models[int(userInput) - 1]
             break
 
@@ -829,14 +837,19 @@ def setup(cfgFile):
     print('')
     sprint(' Api key ', fg='white', bg='yellow', bold=True)
     while True:
-        if userInput := input('» '):
+        userInput = input('» ')
+        if userInput == 'q':
+            return
+        if userInput:
             cfg['api_key'] = userInput
             break
 
     #主机地址，可以为多个，使用分号分割
     print('')
-    sprint(' Api host (semicolon-separated) ', fg='white', bg='yellow', bold=True)
+    sprint(' Api host(optional, semicolon-separated) ', fg='white', bg='yellow', bold=True)
     userInput = input('» ')
+    if userInput == 'q':
+        return
     cfg['api_host'] = ';'.join([e if e.startswith('http') else 'https://' + e 
         for e in userInput.replace(' ', '').split(';') if e])
 
@@ -847,6 +860,8 @@ def setup(cfgFile):
     print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(styles, 1)))
     while True:
         userInput = input('» [1] ') or '1'
+        if userInput == 'q':
+            return
         if '1' <= userInput <= str(len(styles)):
             cfg['display_style'] = styles[int(userInput) - 1]
             break
@@ -858,6 +873,8 @@ def setup(cfgFile):
     print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(turns, 1)))
     while True:
         userInput = input('» [1] ') or '1'
+        if userInput == 'q':
+            return
         if userInput in ('1', '2'):
             cfg['chat_type'] = 'multi_turn' if (userInput == '1') else 'single_turn'
             break
@@ -867,6 +884,8 @@ def setup(cfgFile):
     sprint(' Conversation token limit ', fg='white', bg='yellow', bold=True)
     while True:
         userInput = input('» [4000] ') or '4000'
+        if userInput == 'q':
+            return
         if userInput.isdigit():
             cfg['token_limit'] = int(userInput)
             if cfg['token_limit'] < 1000:
@@ -878,6 +897,8 @@ def setup(cfgFile):
     sprint(' Max history ', fg='white', bg='yellow', bold=True)
     while True:
         userInput = input('» [10] ') or '10'
+        if userInput == 'q':
+            return
         if userInput.isdigit():
             cfg['max_history'] = int(userInput)
             break
@@ -888,9 +909,11 @@ def setup(cfgFile):
     prompts = []
     while (userInput := input('» ')):
         prompts.append(userInput)
+    if userInput == 'q':
+        return
     cfg['prompt'] = '' #prompt是prompts.txt里面某一个prompt的标题
     cfg['custom_prompt'] = '\n'.join(prompts)
-
+    
     saveConfig(cfgFile, cfg)
 
 #------------------------------------------------------------
