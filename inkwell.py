@@ -3,7 +3,7 @@
 #Author: cdhigh <https://github.com/cdhigh>
 """运行于终端的Ai助手，主要为Kindle设计，也适用于其他系统的终端
 1. Python >= 3.8
-2. 不依赖任何第三方库
+2. 单文件设计，不依赖任何第三方库
 3. 支持多个api服务器自动轮换，规避流量限制
 4. 支持终端显示格式化后的markdown文本
 5. 支持将会话历史导出为格式良好的电子书
@@ -11,7 +11,7 @@
 1. 使用命令行参数 -s 或 --setup 开始交互式的初始化和配置
 2. 不带参数执行，自动使用同一目录下的配置文件 config.json，如果没有则自动新建一个默认模板
 3. 如果需要不同的配置，可以传入参数 python inkwell.py --config path/to/config.json
-4. 在kindle上使用时可以在kterm的menu.json里面添加一个项目，action值为：
+4. 在kindle上使用时可以在kterm的menu.json里面添加一个或多个项目，action值为：
 bin/kterm.sh -e 'python3 /mnt/us/extensions/kterm/ai/inkwell.py --config /mnt/us/extensions/kterm/ai/google.json
 5. 如果需要自动开关wifi，可以在kterm.sh的 `${EXTENSION}/bin/kterm ${PARAM} "$@"` 行前后添加
 lipc-set-prop com.lab126.cmd wirelessEnable 1
@@ -21,7 +21,7 @@ import os, sys, re, json, itertools, ssl, argparse
 import http.client
 from urllib.parse import urlsplit
 
-__Version__ = 'v1.4.1 (2024-12-18)'
+__Version__ = 'v1.4.2 (2024-12-21)'
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_JSON = f"{BASE_PATH}/config.json"
 HISTORY_JSON = "history.json" #历史文件会自动跟随程序传入的配置文件路径
@@ -115,6 +115,13 @@ def style(text, fg=None, bg=None, bold=None, dim=None, underline=None, overline=
 #向终端输出带颜色的字符串
 def sprint(txt, **kwargs):
     print(style(txt, **kwargs))
+
+#字符串转整数，出错则返回default
+def str_to_int(txt, default=0):
+    try:
+        return int(txt)
+    except:
+        return default
 
 #获取配置数据，这个函数返回的配置字典是经过校验的，里面的数据都是合法的
 def loadConfig(cfgFile=None):
@@ -245,11 +252,10 @@ def deleteHistory(indexList):
 #导出某些历史信息到电子书
 def exportHistory(expName, indexList):
     global g_history, g_cfgFile
-    # [0] 为导出当前会话
-    if len(indexList) == 1 and indexList[0] == 0:
-        history = [{'topic': g_currTopic, 'messages': g_messages[1:]}]
-    else:
-        history = [item for idx, item in enumerate(g_history, 1) if idx in indexList]
+    # 0 为导出当前会话
+    history = [g_history[index - 1] if index else {'topic': g_currTopic, 'messages': g_messages[1:]}
+        for index in indexList if index <= len(g_history)]
+
     if not history:
         print('No conversation match the selected number')
         return
@@ -394,7 +400,7 @@ def showMenu():
     print(g_currPrompt)
     print('')
     sprint(' Current conversation ', fg='white', bg='yellow', bold=True)
-    print(g_currTopic)
+    print(f' 0. {g_currTopic}')
     print('')
     sprint(' Previous conversations ', fg='white', bg='yellow', bold=True)
     if not g_history:
@@ -409,40 +415,40 @@ def processMenu(client):
     global g_currTopic, g_messages, g_history, g_currPrompt
     showMenu()
     while True:
-        userInput = input('[num, c, d, e, p, q, ?] » ').lower()
-        inputLen = len(userInput)
-        if userInput == 'c': #回到当前对话
+        input_ = input('[num, c, d, e, m, p, q, ?] » ').lower()
+        inputLen = len(input_)
+        if input_ == 'q': #退出
+            return 'quit'
+        elif input_ == 'c': #回到当前对话
             replayConversation()
             break
-        elif userInput == '?': #显示命令帮助
+        elif input_ == '?': #显示命令帮助
             showCmdList()
-        elif userInput == 'p': #选择一个prompt
+        elif input_ == 'm': #切换model
+            switchModel(client)
+            showMenu()
+        elif input_ == 'p': #选择一个prompt
             switchPrompt()
             showMenu()
-        elif userInput == 'q': #退出
-            return 'quit'
-        elif inputLen > 1 and userInput[0] == 'd' and userInput[1].isdigit(): #删除历史数据
-            deleteHistory(parseRange(userInput[1:]))
+        elif input_[:1] == 'd' and input_[1:].isdigit(): #删除历史数据
+            deleteHistory(parseRange(input_[1:]))
             saveHistory(g_history)
             return 'reshow'
-        elif inputLen > 1 and userInput[0] == 'e' and userInput[1].isdigit(): #将历史数据导出为电子书
+        elif input_[:1] == 'e' and input_[1:].isdigit(): #将历史数据导出为电子书
             expName = input(f'Filename: ')
             if expName:
-                exportHistory(expName, parseRange(userInput[1:]))
+                exportHistory(expName, parseRange(input_[1:]))
             else:
                 print('The filename is empty, canceled')
-        elif userInput == '0': #开始一个新的对话
+        elif input_ == '0': #开始一个新的对话
             startNewConversation(client)
             print(' NEW CONVERSATION STARTED')
             printChatBubble('user', g_currTopic)
             break
-        elif userInput.isdigit(): #切换到其他对话
-            if 1 <= (index := int(userInput)) <= len(g_history):
-                switchConversation(client, g_history.pop(index - 1))
-                replayConversation()
-                break
-            else:
-                print('The conversation number is out of range')
+        elif 1 <= (index := str_to_int(input_)) <= len(g_history): #切换到其他对话
+            switchConversation(client, g_history.pop(index - 1))
+            replayConversation()
+            break
 
 #开始一个新的会话
 def startNewConversation(client):
@@ -451,7 +457,7 @@ def startNewConversation(client):
         addCurrentConvToHistory(client)
     g_messages = g_messages[:1] #第一个元素是系统Prompt，要一直保留
     g_currTopic = DEFAULT_TOPIC
-    g_currPrompt = g_config.get('prompt')
+    g_currPrompt = g_config.get('prompt', 'default')
     promptText = getPromptText(g_currPrompt)
     if promptText == DEFAULT_PROMPT:
         g_currPrompt = 'default'
@@ -468,7 +474,7 @@ def switchConversation(client, msg):
         addCurrentConvToHistory(client)
     g_messages = g_messages[:1] + msg.get('messages', [])
     g_currTopic = msg.get('topic', DEFAULT_TOPIC)
-    g_currPrompt = msg.get('prompt')
+    g_currPrompt = msg.get('prompt', 'default')
     promptText = getPromptText(g_currPrompt)
     if promptText == DEFAULT_PROMPT:
         g_currPrompt = 'default'
@@ -487,6 +493,38 @@ def getPromptText(promptName):
 
     return prompt if prompt else DEFAULT_PROMPT
 
+#显示菜单，切换当前服务提供商的其他model
+def switchModel(client):
+    global g_cfgFile, g_config
+    provider = g_config.get('provider')
+    model = g_config.get('model')
+    if provider not in AI_LIST:
+        print('Current provider is invalid')
+        return
+
+    models = [item['name'] for item in AI_LIST[provider]['models']]
+    print('')
+    sprint(' Current model ', fg='white', bg='yellow', bold=True)
+    print(f'{provider}/{model}')
+    print('')
+    sprint(' Available models [add ! to persist] ', fg='white', bg='yellow', bold=True)
+    print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(models, 1)))
+    print('')
+    while True:
+        input_ = input('» ')
+        if input_ == 'q':
+            return
+        needSave = False
+        if input_[-1:] == '!': #保存到配置文件
+            input_ = input_[:-1]
+            needSave = True
+        if 1 <= (index := str_to_int(input_)) <= len(models):
+            client.model = models[index - 1]
+            g_config['model'] = client.model
+            if needSave:
+                saveConfig(g_cfgFile, g_config)
+            break
+
 #显示菜单，选择一个会话使用的prompt
 def switchPrompt():
     global g_currPrompt, g_prompts, g_config, g_messages
@@ -501,17 +539,15 @@ def switchPrompt():
     print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(promptNames, 1)))
     print('')
     while True:
-        userInput = input('[q 0 num] » ')
-        if userInput == 'q':
+        input_ = input('[q 0 num] » ')
+        if input_ == 'q':
             break
-        elif not userInput.isdigit():
-            continue
-        index = int(userInput)
+        index = str_to_int(input_, -1)
         if index == 0: #显示当前prompt具体内容
             print(g_messages[0]['content'])
             print('')
             continue
-        if 1 <= index <= len(promptNames):
+        elif 1 <= index <= len(promptNames):
             if index == 1:
                 g_currPrompt = 'default'
                 prompt = DEFAULT_PROMPT
@@ -549,6 +585,7 @@ def showCmdList():
     print('[   c  ] {}'.format(style('continue current conversation', fg='bright_black')))
     print('[ dnum ] {}'.format(style('delete one or range conversations', fg='bright_black')))
     print('[ enum ] {}'.format(style('export one or range conversations', fg='bright_black')))
+    print('[   m  ] {}'.format(style('switch to other model', fg='bright_black')))
     print('[   p  ] {}'.format(style('choose another prompt', fg='bright_black')))
     print('[   q  ] {}'.format(style('quit the program', fg='bright_black')))
     print('[   ?  ] {}'.format(style('show the command list', fg='bright_black')))
@@ -734,7 +771,7 @@ def start(cfgFile):
         sprint('Api key is missing', bold=True)
         sprint('Set it in the config file or run with the -s option', bold=True)
         print('')
-        userInput = input('Press return key to quit ')
+        input_ = input('Press return key to quit ')
         return
 
     provider = cfg.get('provider')
@@ -759,11 +796,11 @@ def start(cfgFile):
         printChatBubble('user', g_currTopic)
         while not quitRequested:
             sys.stdin.flush()
-            userInput = input("» ")
-            if userInput == 'q' or userInput == 'Q':
+            input_ = input("» ")
+            if input_ == 'q' or input_ == 'Q':
                 quitRequested = True
                 break
-            elif userInput == '?':
+            elif input_ == '?':
                 msgArr = []
                 ret = 'reshow'
                 while ret == 'reshow':
@@ -774,16 +811,16 @@ def start(cfgFile):
             else:
                 msg = '\n'.join(msgArr).strip()
                 #输入r重发上一个请求
-                if userInput in ('r', 'R') and not msg and len(g_messages) > 2:
+                if input_ in ('r', 'R') and not msg and len(g_messages) > 2:
                     userItem = g_messages[-2] #开头为背景prompt，之后user/assistant交替
                     msg = userItem.get('content', '')
-                    userInput = ''
+                    input_ = ''
                     for line in msg.splitlines():
                         print(f'» {line}')
                     print('')
 
-                if userInput: #可以输入多行，逐行累加
-                    msgArr.append(userInput)
+                if input_: #可以输入多行，逐行累加
+                    msgArr.append(input_)
                 elif msg: #输入一个空行并且之前已经有过输入，发送请求
                     msgArr = []
                     g_messages.append({"role": 'user', "content": msg})
@@ -813,11 +850,11 @@ def setup(cfgFile):
     print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(providers, 1)))
     models = []
     while True:
-        userInput = input('» ')
-        if userInput == 'q':
+        input_ = input('» ')
+        if input_ in ('q', 'Q'):
             return
-        if '1' <= userInput <= str(len(providers)):
-            cfg['provider'] = provider = providers[int(userInput) - 1]
+        if 1 <= (index := str_to_int(input_)) <= len(providers):
+            cfg['provider'] = provider = providers[index - 1]
             models = [item['name'] for item in AI_LIST[provider]['models']]
             break
 
@@ -826,32 +863,32 @@ def setup(cfgFile):
     sprint(' Models ', fg='white', bg='yellow', bold=True)
     print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(models, 1)))
     while True:
-        userInput = input('» ')
-        if userInput == 'q':
+        input_ = input('» ')
+        if input_ in ('q', 'Q'):
             return
-        if '1' <= userInput <= str(len(models)):
-            cfg['model'] = models[int(userInput) - 1]
+        if 1 <= (index := str_to_int(input_)) <= len(models):
+            cfg['model'] = models[index - 1]
             break
 
     #Api key
     print('')
     sprint(' Api key ', fg='white', bg='yellow', bold=True)
     while True:
-        userInput = input('» ')
-        if userInput == 'q':
+        input_ = input('» ')
+        if input_ in ('q', 'Q'):
             return
-        if userInput:
-            cfg['api_key'] = userInput
+        if input_:
+            cfg['api_key'] = input_
             break
 
     #主机地址，可以为多个，使用分号分割
     print('')
     sprint(' Api host(optional, semicolon-separated) ', fg='white', bg='yellow', bold=True)
-    userInput = input('» ')
-    if userInput == 'q':
+    input_ = input('» ')
+    if input_ in ('q', 'Q'):
         return
     cfg['api_host'] = ';'.join([e if e.startswith('http') else 'https://' + e 
-        for e in userInput.replace(' ', '').split(';') if e])
+        for e in input_.replace(' ', '').split(';') if e])
 
     #Display style
     print('')
@@ -859,11 +896,11 @@ def setup(cfgFile):
     styles = ['markdown', 'markdown_table', 'plaintext']
     print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(styles, 1)))
     while True:
-        userInput = input('» [1] ') or '1'
-        if userInput == 'q':
+        input_ = input('» [1] ') or '1'
+        if input_ in ('q', 'Q'):
             return
-        if '1' <= userInput <= str(len(styles)):
-            cfg['display_style'] = styles[int(userInput) - 1]
+        if 1 <= (index := str_to_int(input_)) <= len(styles):
+            cfg['display_style'] = styles[index - 1]
             break
 
     #是否支持上下文多轮对话
@@ -872,22 +909,22 @@ def setup(cfgFile):
     turns = ['Multi-turn (multi-step conversations)', 'Single-turn (One-shot conversations only)']
     print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(turns, 1)))
     while True:
-        userInput = input('» [1] ') or '1'
-        if userInput == 'q':
+        input_ = input('» [1] ') or '1'
+        if input_ in ('q', 'Q'):
             return
-        if userInput in ('1', '2'):
-            cfg['chat_type'] = 'multi_turn' if (userInput == '1') else 'single_turn'
+        if input_ in ('1', '2'):
+            cfg['chat_type'] = 'multi_turn' if (input_ == '1') else 'single_turn'
             break
         
     #Conversation token limit
     print('')
     sprint(' Conversation token limit ', fg='white', bg='yellow', bold=True)
     while True:
-        userInput = input('» [4000] ') or '4000'
-        if userInput == 'q':
+        input_ = input('» [4000] ') or '4000'
+        if input_ in ('q', 'Q'):
             return
-        if userInput.isdigit():
-            cfg['token_limit'] = int(userInput)
+        if input_.isdigit():
+            cfg['token_limit'] = int(input_)
             if cfg['token_limit'] < 1000:
                 cfg['token_limit'] = 1000
             break
@@ -896,23 +933,25 @@ def setup(cfgFile):
     print('')
     sprint(' Max history ', fg='white', bg='yellow', bold=True)
     while True:
-        userInput = input('» [10] ') or '10'
-        if userInput == 'q':
+        input_ = input('» [10] ') or '10'
+        if input_ in ('q', 'Q'):
             return
-        if userInput.isdigit():
-            cfg['max_history'] = int(userInput)
+        if input_.isdigit():
+            cfg['max_history'] = int(input_)
             break
 
     #配置自定义的prompt
     print('')
     sprint(' Custom prompt (optional) ', fg='white', bg='yellow', bold=True)
     prompts = []
-    while (userInput := input('» ')):
-        prompts.append(userInput)
-    if userInput == 'q':
+    while (input_ := input('» ')):
+        prompts.append(input_)
+    if input_ in ('q', 'Q'):
         return
-    cfg['prompt'] = '' #prompt是prompts.txt里面某一个prompt的标题
-    cfg['custom_prompt'] = '\n'.join(prompts)
+    prompt = '\n'.join(prompts).strip()
+    #prompt是prompts.txt里面某一个prompt的标题
+    cfg['prompt'] = 'custom' if prompt else 'default'
+    cfg['custom_prompt'] = prompt
     
     saveConfig(cfgFile, cfg)
 
@@ -968,7 +1007,7 @@ AI_LIST = {
 #自定义HTTP响应错误异常
 class HttpResponseError(Exception):
     def __init__(self, status, reason, body=None):
-        super().__init__(f"HTTP {status}: {reason}")
+        super().__init__(f"{status}: {reason}")
         self.status = status
         self.reason = reason
         self.body = body
@@ -984,14 +1023,10 @@ class SimpleAiProvider:
         self.name = name
         self.apiKey = apiKey
         self.singleTurn = singleTurn
+        self.models = AI_LIST[name]['models']
         
-        index = 0
-        for idx, item in enumerate(AI_LIST[name]['models']):
-            if model == item['name']:
-                index = idx
-                break
-        
-        item = AI_LIST[name]['models'][index]
+        #如果传入的model不在列表中，默认使用第一个
+        item = next((m for m in self.models if m['name'] == model), self.models[0])
         self.model = item['name']
         self.rpm = item['rpm']
         self.context_size = item['context']
@@ -1086,7 +1121,7 @@ class SimpleAiProvider:
                 self.connPools[index][1] = None
 
     def __repr__(self):
-        return f'{self.name}({self.model})'
+        return f'{self.name}/{self.model}'
 
     #外部调用此函数即可调用简单聊天功能
     #message: 如果是文本，则使用各项默认参数
@@ -1352,7 +1387,7 @@ if __name__ == "__main__":
     if not args.setup and cfgFile and not os.path.isfile(cfgFile):
         print('The file {} does not exist'.format(style(cfgFile, bold=True)))
         print('')
-        userInput = input('Press return key to quit ')
+        input_ = input('Press return key to quit ')
     else:
         cfgFile = cfgFile or CONFIG_JSON
         if args.setup:
