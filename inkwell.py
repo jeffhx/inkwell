@@ -54,15 +54,6 @@ DEFAULT_TOPIC = 'new conversation'
 DEFAULT_CFG = {"provider": "google", "model": "gemini-1.5-flash", "api_key": "", "api_host": "", "display_style": "markdown",
     "chat_type": "multi_turn", "token_limit": 4000, "max_history": 10, "prompt": "custom", "custom_prompt": ""}
 
-#为简化代码，设置几个全局变量
-g_cfgFile = ''
-g_config = {}
-g_currTopic = ''
-g_prompts = {}
-g_currPrompt = ''
-g_messages = []
-g_history = []
-
 #AI响应的结构封装
 class AiResponse:
     def __init__(self, success, content='', error='', host=''):
@@ -123,837 +114,826 @@ def str_to_int(txt, default=0):
     except:
         return default
 
-#获取配置数据，这个函数返回的配置字典是经过校验的，里面的数据都是合法的
-def loadConfig(cfgFile=None):
-    global g_cfgFile, g_config
-    g_cfgFile = cfgFile or CONFIG_JSON
-    cfg = {}
-    if not os.path.isfile(g_cfgFile):
-        print('\n')
-        sprint(f'The file {g_cfgFile} does not exist', bold=True)
-        sprint('Creating a default configuration file with this name...', bold=True)
-        print('Edit the file manually or run with the -s option to complete the setup')
-        print('')
-        try:
-            with open(g_cfgFile, 'w', encoding='utf-8') as f:
-                json.dump(DEFAULT_CFG, f, indent=2)
-        except Exception as e:
-            print(f'Failed to write {g_cfgFile}: {e}')
-        input('Press return key to quit ')
-        return None
-
-    if os.path.isfile(g_cfgFile):
-        with open(g_cfgFile, 'r', encoding='utf-8') as f:
-            cfg = json.load(f)
-    if not isinstance(cfg, dict):
-        cfg = {}
-
-    #校验和设置几个全局变量
-    provider = cfg.get('provider', '').lower()
-    if provider not in AI_LIST:
-        provider = 'google'
-        cfg['provider'] = provider
-    models = [item['name'] for item in AI_LIST[provider]['models']]
-    model = cfg.get('model')
-    if model not in models:
-        cfg['model'] = models[0]
-    if cfg.get("token_limit", 4000) < 1000:
-        cfg['token_limit'] = 1000
-    displayStyle = cfg.get('display_style')
-    if displayStyle not in ('plaintext', 'markdown', 'markdown_table'):
-        displayStyle = 'markdown'
-    cfg['display_style'] = displayStyle
-    g_config = cfg
-    return cfg
-
-#将配置保存到配置文件
-def saveConfig(cfgFile, cfg):
-    try:
-        with open(cfgFile, 'w', encoding='utf-8') as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print('Failed to write {}: {}\n'.format(style(cfgFile, bold=True), str(e)))
-    else:
-        print('Config have been saved to file: {}\n'.format(style(cfgFile, bold=True)))
-
-#加载预置的prompt列表
-def loadPrompts():
-    global g_prompts
-    if g_prompts or not os.path.isfile(PROMPTS_FILE):
-        return g_prompts
-
-    g_prompts = {}
-    try:
-        with open(PROMPTS_FILE, 'r', encoding='utf-8') as f:
-            entries = [entry.partition('\n') for e in f.read().split('</>') if (entry := e.strip())]
-            for name, _, content in entries:
-                name = name.strip()
-                content = content.strip()
-                if name and content:
-                    g_prompts[name] = content
-    except Exception as e:
-        print(f'Failed to read {style(PROMPTS_FILE, bold=True)}: {e}')
-    return g_prompts
-
-#加载历史对话信息
-def loadHistory():
-    global g_history, g_config
-    if g_config.get('max_history', 10) <= 0:
-        return g_history
-
-    hisPath = os.path.dirname(g_cfgFile)
-    hisFile = os.path.join(hisPath, HISTORY_JSON)
-    if os.path.isfile(hisFile):
-        try:
-            with open(hisFile, 'r', encoding='utf-8') as f:
-                g_history = json.load(f)
-            if not isinstance(g_history, list):
-                g_history = []
-        except:
-            pass
-    return g_history
-
-#将当前会话添加到历史对话列表
-def addCurrentConvToHistory(client):
-    global g_history, g_config, g_currPrompt, g_currTopic, g_messages
-    maxHisotry = g_config.get('max_history', 10)
-    if maxHisotry <= 0 or not g_currTopic:
-        return
-
-    if g_history and g_history[-1]['topic'] == g_currTopic:
-        g_history[-1]['messages'] = g_messages[1:] #第一条消息为背景prompt
-    else:
-        g_history.append({'topic': g_currTopic, 'prompt': g_currPrompt, 'messages': g_messages[1:]})
-    if len(g_history) > maxHisotry:
-        g_history = g_history[-maxHisotry:]
-    saveHistory(g_history)
-
-#保存历史对话信息
-def saveHistory(history):
-    global g_cfgFile, g_config
-    if g_config.get('max_history', 10) <= 0:
-        return
-
-    hisPath = os.path.dirname(g_cfgFile)
-    hisFile = os.path.join(hisPath, HISTORY_JSON)
-    try:
-        if not os.path.isdir(hisPath):
-            os.mkdir(hisPath)
-        with open(hisFile, 'w', encoding='utf-8') as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print('Failed to save history file {}: {}'.format(style(hisFile, bold=True), str(e)))
-
-#根据下标列表，删除某些历史信息
-def deleteHistory(indexList):
-    global g_history
-    g_history = [item for idx, item in enumerate(g_history, 1) if idx not in indexList]
-
-#导出某些历史信息到电子书
-def exportHistory(expName, indexList):
-    global g_history, g_cfgFile
-    # 0 为导出当前会话
-    history = [g_history[index - 1] if index else {'topic': g_currTopic, 'messages': g_messages[1:]}
-        for index in indexList if index <= len(g_history)]
-
-    if not history:
-        print('No conversation match the selected number')
-        return
-
-    def dir_available(dir_):
-        return os.path.isdir(dir_) and os.access(dir_, os.W_OK)
-
-    #寻找一个最合适的路径
-    suffix = '.html'
-    if dir_available('/mnt/us/documents'):
-        bookPath = '/mnt/us/documents'
-        suffix = '.txt'
-    elif dir_available(BASE_PATH):
-        bookPath = BASE_PATH
-    elif dir_available(os.path.dirname(g_cfgFile)):
-        bookPath = os.path.dirname(g_cfgFile)
-    elif dir_available(os.path.expanduser('~')):
-        bookPath = os.path.expanduser('~')
-    else:
-        print('Cannot find a writeable directory')
-        return
-    
-    if os.path.splitext(expName)[-1] == suffix:
-        suffix = ''
-    expFileName = f"{bookPath}/{expName}{suffix}"
-    try:
-        with open(expFileName, 'w', encoding='utf-8') as f:
-            f.write('<!DOCTYPE html>\n<html lang="zh">\n<head><meta charset="UTF-8"><title>AI Chat History</title></head><body>')
-            for idx, item in enumerate(history, 1):
-                f.write(f"<h1>Topic: {item['topic']}</h1><hr/>\n")
-                for msg in item['messages']:
-                    content = markdownToHtml(msg["content"])
-                    if msg['role'] == 'user':
-                        f.write(f'<div style="margin-bottom: 10px;"><strong>User:</strong><p style="margin-left: 25px;">{content}</p></div><hr/>\n')
-                    else:
-                        f.write(f'<div style="margin-bottom: 10px;"><strong>AI:</strong><p style="margin-left: 5px;">{content}</p></div><hr/>\n')
-            f.write('</body></html>')
-    except Exception as e:
-        print('Could not export to {}: {}\n'.format(style(expFileName, bold=True), str(e)))
-    else:
-        print("Successfully exported to {}\n".format(style(expFileName, bold=True)))
-
-#简单的markdown转换为html，只转换常用的几个格式
-#不严谨，可能会排版混乱，但是应付AI聊天的场景应该足够
-def markdownToHtml(content):
-    import uuid
-    #先把多行代码块中的文本提取出来，避免下面其他的处理搞乱代码
-    codes = {}
-    for mat in re.finditer(r'```(\w+)?\n(.*?)```', content, flags=re.DOTALL):
-        id_ = '{{' + str(uuid.uuid4()) + '}}'
-        codes[id_] = (mat.group(1), mat.group(2)) #语言标识，代码块
-        content = content.replace(mat.group(0), id_)
-
-    #行内代码 (`code`)
-    content = re.sub(r'`([^`]+)`', r'<code>\1</code>', content)
-
-    content = mdTableToHtml(content)
-
-    #标题 (# 或 ## 等)
-    content = re.sub(r'^(#{1,6})\s+?(.*)$', lambda m: f'<h{len(m.group(1))}>{m.group(2).strip()}</h{len(m.group(1))}>', content, flags=re.MULTILINE)
-    
-    #加粗 (**bold** 或 __bold__)
-    content = re.sub(r'(\*\*|__)(.*?)\1', r'<strong>\2</strong>', content)
-    
-    #斜体 (*italic* 或 _italic_)
-    content = re.sub(r'(\*|_)(.*?)\1', r'<em>\2</em>', content)
-
-    #删除线 (~~text~~)
-    content = re.sub(r'(~{1,2})(.*?)\1', r'<s>\2</s>', content)
-
-    #无序列表 (- 或 * 开头)
-    content = re.sub(r'^ *[\*\-]\s+?(.*)$', r'<div><strong>• </strong>\1</div>', content, flags=re.MULTILINE)
-    
-    #有序列表 (数字加点开头)
-    content = re.sub(r'^ *(\d+\.\s+?)(.*)$', r'<div><strong>\1</strong>\2</div>', content, flags=re.MULTILINE)
-
-    #链接 [text](url)
-    content = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', content)
-    
-    #段落 (保持换行)
-    content = re.sub(r'([^\n]+)', r'<div>\1</div>', content)
-
-    #恢复多行代码块，Kindle不支持div边框，所以在代码块外套一个table，使用table的外框
-    tpl = ('<table border="1" cellspacing="0" width="100%" style="background-color:#f9f9f9;">'
-        '<tr><td><pre><code class="{lang}">{code}</code></pre></td></tr></table>')
-    for id_, (lang, code) in codes.items():
-        code = code.replace(' ', '&nbsp;')
-        content = content.replace(id_, tpl.format(lang=lang, code=code))
+#主类
+class InkWell:
+    def __init__(self, cfgFile):
+        self.cfgFile = cfgFile or CONFIG_JSON
+        self.currTopic = ''
+        self.prompts = {}
+        self.currPrompt = ''
+        self.history = []
+        self.messages = [{"role": "system", "content": ''}] #role: system, user, assistant
+        self.config = self.loadConfig()
         
-    return content
+    #获取配置数据，这个函数返回的配置字典是经过校验的，里面的数据都是合法的
+    def loadConfig(self):
+        cfg = {}
+        if not os.path.isfile(self.cfgFile):
+            print('\n')
+            sprint(f'The file {self.cfgFile} does not exist', bold=True)
+            sprint('Creating a default configuration file with this name...', bold=True)
+            print('Edit the file manually or run with the -s option to complete the setup')
+            print('')
+            try:
+                with open(self.cfgFile, 'w', encoding='utf-8') as f:
+                    json.dump(DEFAULT_CFG, f, indent=2)
+            except Exception as e:
+                print(f'Failed to write {self.cfgFile}: {e}')
+            input('Press return key to quit ')
+            return None
 
-#markdown里面的表格转换为html格式的表格
-def mdTableToHtml(content):
-    currTb = []
-    tbHead = True
-    ret = []
-    for idx, line in enumerate(content.splitlines()):
-        trimed = line.strip()
-        if trimed.startswith('|') and trimed.endswith('|') and trimed.count('|') > 2:
-            if not currTb: #表格开始
-                currTb.append('<table border="1" cellspacing="0" width="100%">')
-            tds = [td.strip() for td in trimed.strip('|').split('|')]
-            if ''.join([td.strip(':+- ') for td in tds]): #忽略分割行
-                currTb.append('<tr>')
-                currTb.append(''.join([f'<td><strong>{td}</strong></td>' if tbHead else f'<td>{td}</td>' for td in tds]))
-                currTb.append('</tr>')
-                tbHead = False
-        elif trimed.startswith('+') and trimed.endswith('+') and not trimed.strip(':+- '): #另一种分割行
-            if not currTb: #表格开始
-                currTb.append('<table border="1" cellspacing="0" width="100%">')
-        elif currTb: #之前有表格，添加此表格到结果字符串列表
+        if os.path.isfile(self.cfgFile):
+            with open(self.cfgFile, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+        if not isinstance(cfg, dict):
+            cfg = {}
+
+        #校验和设置几个全局变量
+        provider = cfg.get('provider', '').lower()
+        if provider not in AI_LIST:
+            provider = 'google'
+            cfg['provider'] = provider
+        models = [item['name'] for item in AI_LIST[provider]['models']]
+        model = cfg.get('model')
+        if model not in models:
+            cfg['model'] = models[0]
+        if cfg.get("token_limit", 4000) < 1000:
+            cfg['token_limit'] = 1000
+        displayStyle = cfg.get('display_style')
+        if displayStyle not in ('plaintext', 'markdown', 'markdown_table'):
+            displayStyle = 'markdown'
+        cfg['display_style'] = displayStyle
+        return cfg
+
+    #将配置保存到配置文件
+    def saveConfig(self, cfg):
+        try:
+            with open(self.cfgFile, 'w', encoding='utf-8') as f:
+                json.dump(cfg, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print('Failed to write {}: {}\n'.format(style(self.cfgFile, bold=True), str(e)))
+        else:
+            print('Config have been saved to file: {}\n'.format(style(self.cfgFile, bold=True)))
+
+    #加载预置的prompt列表
+    def loadPrompts(self):
+        if self.prompts or not os.path.isfile(PROMPTS_FILE):
+            return self.prompts
+
+        self.prompts = {}
+        try:
+            with open(PROMPTS_FILE, 'r', encoding='utf-8') as f:
+                entries = [entry.partition('\n') for e in f.read().split('</>') if (entry := e.strip())]
+                for name, _, content in entries:
+                    name = name.strip()
+                    content = content.strip()
+                    if name and content:
+                        self.prompts[name] = content
+        except Exception as e:
+            print(f'Failed to read {style(PROMPTS_FILE, bold=True)}: {e}')
+        return self.prompts
+
+    #加载历史对话信息，返回历史列表
+    def loadHistory(self):
+        if self.config.get('max_history', 10) <= 0: #禁用了历史对话功能
+            return []
+
+        hisPath = os.path.dirname(self.cfgFile)
+        hisFile = os.path.join(hisPath, HISTORY_JSON)
+        history = []
+        if os.path.isfile(hisFile):
+            try:
+                with open(hisFile, 'r', encoding='utf-8') as f:
+                    history = json.load(f)
+                if not isinstance(history, list):
+                    history = []
+            except:
+                pass
+        return history
+
+    #将当前会话添加到历史对话列表
+    def addCurrentConvToHistory(self):
+        maxHisotry = self.config.get('max_history', 10)
+        if maxHisotry <= 0 or not self.currTopic:
+            return
+
+        if self.history and self.history[-1]['topic'] == self.currTopic:
+            self.history[-1]['messages'] = self.messages[1:] #第一条消息固定为背景prompt
+        else:
+            self.history.append({'topic': self.currTopic, 'prompt': self.currPrompt, 'messages': self.messages[1:]})
+        if len(self.history) > maxHisotry:
+            self.history = self.history[-maxHisotry:]
+        self.saveHistory()
+
+    #保存历史对话信息到文件
+    def saveHistory(self):
+        if self.config.get('max_history', 10) <= 0:
+            return
+
+        hisPath = os.path.dirname(self.cfgFile)
+        hisFile = os.path.join(hisPath, HISTORY_JSON)
+        try:
+            if not os.path.isdir(hisPath):
+                os.mkdir(hisPath)
+            with open(hisFile, 'w', encoding='utf-8') as f:
+                json.dump(self.history, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print('Failed to save history file {}: {}'.format(style(hisFile, bold=True), str(e)))
+
+    #根据下标列表，删除某些历史信息
+    def deleteHistory(self, indexList):
+        self.history = [item for idx, item in enumerate(self.history, 1) 
+            if idx not in indexList]
+        if 0 in indexList:  # 0 表示当前对话
+            self.currTopic = DEFAULT_TOPIC
+            self.messages = self.messages[:1]
+
+    #导出某些历史信息到电子书
+    def exportHistory(self, expName, indexList):
+        # 0 为导出当前会话
+        history = [self.history[index - 1] if index else {'topic': self.currTopic, 'messages': self.messages[1:]}
+            for index in indexList if index <= len(self.history)]
+
+        if not history:
+            print('No conversation match the selected number')
+            return
+
+        def dir_available(dir_):
+            return os.path.isdir(dir_) and os.access(dir_, os.W_OK)
+
+        #寻找一个最合适的路径
+        suffix = '.html'
+        if dir_available('/mnt/us/documents'):
+            bookPath = '/mnt/us/documents'
+            suffix = '.txt'
+        elif dir_available(BASE_PATH):
+            bookPath = BASE_PATH
+        elif dir_available(os.path.dirname(self.cfgFile)):
+            bookPath = os.path.dirname(self.cfgFile)
+        elif dir_available(os.path.expanduser('~')):
+            bookPath = os.path.expanduser('~')
+        else:
+            print('Cannot find a writeable directory')
+            return
+        
+        if os.path.splitext(expName)[-1] == suffix:
+            suffix = ''
+        expFileName = f"{bookPath}/{expName}{suffix}"
+        try:
+            with open(expFileName, 'w', encoding='utf-8') as f:
+                f.write('<!DOCTYPE html>\n<html lang="zh">\n<head><meta charset="UTF-8"><title>AI Chat History</title></head><body>')
+                for idx, item in enumerate(history, 1):
+                    f.write(f"<h1>Topic: {item['topic']}</h1><hr/>\n")
+                    for msg in item['messages']:
+                        content = self.markdownToHtml(msg["content"])
+                        if msg['role'] == 'user':
+                            f.write(f'<div style="margin-bottom: 10px;"><strong>User:</strong><p style="margin-left: 25px;">{content}</p></div><hr/>\n')
+                        else:
+                            f.write(f'<div style="margin-bottom: 10px;"><strong>AI:</strong><p style="margin-left: 5px;">{content}</p></div><hr/>\n')
+                f.write('</body></html>')
+        except Exception as e:
+            print('Could not export to {}: {}\n'.format(style(expFileName, bold=True), str(e)))
+        else:
+            print("Successfully exported to {}\n".format(style(expFileName, bold=True)))
+
+    #简单的markdown转换为html，只转换常用的几个格式
+    #不严谨，可能会排版混乱，但是应付AI聊天的场景应该足够
+    def markdownToHtml(self, content):
+        import uuid
+        #先把多行代码块中的文本提取出来，避免下面其他的处理搞乱代码
+        codes = {}
+        for mat in re.finditer(r'```(\w+)?\n(.*?)```', content, flags=re.DOTALL):
+            id_ = '{{' + str(uuid.uuid4()) + '}}'
+            codes[id_] = (mat.group(1), mat.group(2)) #语言标识，代码块
+            content = content.replace(mat.group(0), id_)
+
+        #行内代码 (`code`)
+        content = re.sub(r'`([^`]+)`', r'<code>\1</code>', content)
+
+        content = self.mdTableToHtml(content)
+
+        #标题 (# 或 ## 等)
+        content = re.sub(r'^(#{1,6})\s+?(.*)$', lambda m: f'<h{len(m.group(1))}>{m.group(2).strip()}</h{len(m.group(1))}>', content, flags=re.MULTILINE)
+        
+        #加粗 (**bold** 或 __bold__)
+        content = re.sub(r'(\*\*|__)(.*?)\1', r'<strong>\2</strong>', content)
+        
+        #斜体 (*italic* 或 _italic_)
+        content = re.sub(r'(\*|_)(.*?)\1', r'<em>\2</em>', content)
+
+        #删除线 (~~text~~)
+        content = re.sub(r'(~{1,2})(.*?)\1', r'<s>\2</s>', content)
+
+        #无序列表 (- 或 * 开头)
+        content = re.sub(r'^ *[\*\-]\s+?(.*)$', r'<div><strong>• </strong>\1</div>', content, flags=re.MULTILINE)
+        
+        #有序列表 (数字加点开头)
+        content = re.sub(r'^ *(\d+\.\s+?)(.*)$', r'<div><strong>\1</strong>\2</div>', content, flags=re.MULTILINE)
+
+        #链接 [text](url)
+        content = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', content)
+        
+        #段落 (保持换行)
+        content = re.sub(r'([^\n]+)', r'<div>\1</div>', content)
+
+        #恢复多行代码块，Kindle不支持div边框，所以在代码块外套一个table，使用table的外框
+        tpl = ('<table border="1" cellspacing="0" width="100%" style="background-color:#f9f9f9;">'
+            '<tr><td><pre><code class="{lang}">{code}</code></pre></td></tr></table>')
+        for id_, (lang, code) in codes.items():
+            code = code.replace(' ', '&nbsp;')
+            content = content.replace(id_, tpl.format(lang=lang, code=code))
+            
+        return content
+
+    #markdown里面的表格转换为html格式的表格
+    def mdTableToHtml(self, content):
+        currTb = []
+        tbHead = True
+        ret = []
+        for idx, line in enumerate(content.splitlines()):
+            trimed = line.strip()
+            if trimed.startswith('|') and trimed.endswith('|') and trimed.count('|') > 2:
+                if not currTb: #表格开始
+                    currTb.append('<table border="1" cellspacing="0" width="100%">')
+                tds = [td.strip() for td in trimed.strip('|').split('|')]
+                if ''.join([td.strip(':+- ') for td in tds]): #忽略分割行
+                    currTb.append('<tr>')
+                    currTb.append(''.join([f'<td><strong>{td}</strong></td>' if tbHead else f'<td>{td}</td>' for td in tds]))
+                    currTb.append('</tr>')
+                    tbHead = False
+            elif trimed.startswith('+') and trimed.endswith('+') and not trimed.strip(':+- '): #另一种分割行
+                if not currTb: #表格开始
+                    currTb.append('<table border="1" cellspacing="0" width="100%">')
+            elif currTb: #之前有表格，添加此表格到结果字符串列表
+                currTb.append('</table>')
+                ret.append(''.join(currTb))
+                currTb = []
+                tbHead = True
+            else:
+                ret.append(line)
+
+        if currTb:
             currTb.append('</table>')
             ret.append(''.join(currTb))
-            currTb = []
-            tbHead = True
+        return '\n'.join(ret)
+
+    #分析数值范围，返回一个列表，为了符合用户直觉，范围为前闭后闭，
+    #1 -> [1]; 1-3 -> [1, 2, 3]; 1,3-5 -> [1, 3, 4, 5]
+    def parseRange(self, txt):
+        ret = []
+        arr = [item.split('-', 1) for item in txt.replace(' ', '').split(',')]
+        for item in arr:
+            if len(item) >= 2:
+                if item[0].isdigit() and item[1].isdigit():
+                    ret.extend(range(int(item[0]), int(item[1]) + 1))
+            elif item[0].isdigit():
+                ret.append(int(item[0]))
+        return ret
+
+    #显示菜单项
+    def showMenu(self):
+        print('')
+        sprint(' Current prompt ', fg='white', bg='yellow', bold=True)
+        print(self.currPrompt)
+        print('')
+        sprint(' Current conversation ', fg='white', bg='yellow', bold=True)
+        print(f' 0. {self.currTopic}')
+        print('')
+        sprint(' Previous conversations ', fg='white', bg='yellow', bold=True)
+        if not self.history:
+            sprint('No previous conversations found!', fg='bright_black')
         else:
-            ret.append(line)
+            for idx, item in enumerate(self.history, 1):
+                sprint('{:2d}. {}'.format(idx, item.get('topic', 'Unknown topic'), fg='bright_black'))
+        print('')
 
-    if currTb:
-        currTb.append('</table>')
-        ret.append(''.join(currTb))
-    return '\n'.join(ret)
+    #显示菜单，根据用户选择进行相应的处理
+    def processMenu(self):
+        self.showMenu()
+        while True:
+            input_ = input('[num, c, d, e, m, n, p, q, ?] » ').lower()
+            if input_ == 'q': #退出
+                return 'quit'
+            elif input_ in ('0', 'c'): #回到当前对话
+                self.replayConversation()
+                break
+            elif input_ == '?': #显示命令帮助
+                self.showCmdList()
+            elif input_ == 'm': #切换model
+                self.switchModel()
+                self.showMenu()
+            elif input_ == 'p': #选择一个prompt
+                self.switchPrompt()
+                self.showMenu()
+            elif input_[:1] == 'd' and input_[1:2].isdigit(): #删除历史数据
+                self.deleteHistory(self.parseRange(input_[1:]))
+                self.saveHistory()
+                return 'reshow'
+            elif input_[:1] == 'e' and input_[1:2].isdigit(): #将历史数据导出为电子书
+                expName = input(f'Filename: ')
+                if expName:
+                    self.exportHistory(expName, self.parseRange(input_[1:]))
+                else:
+                    print('The filename is empty, canceled')
+            elif input_ == 'n': #开始一个新的对话
+                self.startNewConversation()
+                print(' NEW CONVERSATION STARTED')
+                self.printChatBubble('user', self.currTopic)
+                break
+            elif 1 <= (index := str_to_int(input_)) <= len(self.history): #切换到其他对话
+                self.switchConversation(self.history.pop(index - 1))
+                self.replayConversation()
+                break
 
-#分析数值范围，返回一个列表，为了符合用户直觉，范围为前闭后闭，
-#1 -> [1]; 1-3 -> [1, 2, 3]; 1,3-5 -> [1, 3, 4, 5]
-def parseRange(txt):
-    ret = []
-    arr = [item.split('-', 1) for item in txt.replace(' ', '').split(',')]
-    for item in arr:
-        if len(item) >= 2:
-            if item[0].isdigit() and item[1].isdigit():
-                ret.extend(range(int(item[0]), int(item[1]) + 1))
-        elif item[0].isdigit():
-            ret.append(int(item[0]))
-    return ret
-
-#显示菜单项
-def showMenu():
-    global g_currTopic, g_messages, g_history, g_currPrompt
-    print('')
-    sprint(' Current prompt ', fg='white', bg='yellow', bold=True)
-    print(g_currPrompt)
-    print('')
-    sprint(' Current conversation ', fg='white', bg='yellow', bold=True)
-    print(f' 0. {g_currTopic}')
-    print('')
-    sprint(' Previous conversations ', fg='white', bg='yellow', bold=True)
-    if not g_history:
-        sprint('No previous conversations found!', fg='bright_black')
-    else:
-        for idx, item in enumerate(g_history, 1):
-            sprint('{:2d}. {}'.format(idx, item.get('topic', 'Unknown topic'), fg='bright_black'))
-    print('')
-
-#显示菜单，根据用户选择进行相应的处理
-def processMenu(client):
-    global g_currTopic, g_messages, g_history, g_currPrompt
-    showMenu()
-    while True:
-        input_ = input('[num, c, d, e, m, p, q, ?] » ').lower()
-        inputLen = len(input_)
-        if input_ == 'q': #退出
-            return 'quit'
-        elif input_ == 'c': #回到当前对话
-            replayConversation()
-            break
-        elif input_ == '?': #显示命令帮助
-            showCmdList()
-        elif input_ == 'm': #切换model
-            switchModel(client)
-            showMenu()
-        elif input_ == 'p': #选择一个prompt
-            switchPrompt()
-            showMenu()
-        elif input_[:1] == 'd' and input_[1:].isdigit(): #删除历史数据
-            deleteHistory(parseRange(input_[1:]))
-            saveHistory(g_history)
-            return 'reshow'
-        elif input_[:1] == 'e' and input_[1:].isdigit(): #将历史数据导出为电子书
-            expName = input(f'Filename: ')
-            if expName:
-                exportHistory(expName, parseRange(input_[1:]))
-            else:
-                print('The filename is empty, canceled')
-        elif input_ == '0': #开始一个新的对话
-            startNewConversation(client)
-            print(' NEW CONVERSATION STARTED')
-            printChatBubble('user', g_currTopic)
-            break
-        elif 1 <= (index := str_to_int(input_)) <= len(g_history): #切换到其他对话
-            switchConversation(client, g_history.pop(index - 1))
-            replayConversation()
-            break
-
-#开始一个新的会话
-def startNewConversation(client):
-    global g_config, g_currPrompt, g_currTopic, g_messages
-    if g_currTopic != DEFAULT_TOPIC:
-        addCurrentConvToHistory(client)
-    g_messages = g_messages[:1] #第一个元素是系统Prompt，要一直保留
-    g_currTopic = DEFAULT_TOPIC
-    g_currPrompt = g_config.get('prompt', 'default')
-    promptText = getPromptText(g_currPrompt)
-    if promptText == DEFAULT_PROMPT:
-        g_currPrompt = 'default'
-    elif promptText == g_config.get('custom_prompt'):
-        g_currPrompt = 'custom'
-    g_messages[0]['content'] = promptText
+    #开始一个新的会话
+    def startNewConversation(self):
+        if self.currTopic != DEFAULT_TOPIC: #先保存当前对话
+            self.addCurrentConvToHistory()
+        self.messages = self.messages[:1] #第一个元素是系统Prompt，要一直保留
+        self.currTopic = DEFAULT_TOPIC
+        self.currPrompt = self.config.get('prompt', 'default')
+        promptText = self.getPromptText(self.currPrompt)
+        if promptText == DEFAULT_PROMPT:
+            self.currPrompt = 'default'
+        elif promptText == self.config.get('custom_prompt'):
+            self.currPrompt = 'custom'
+        self.messages[0]['content'] = promptText
     
-#切换到其他会话
-#client: AI封装实例
-#msg: 目的消息字典
-def switchConversation(client, msg):
-    global g_currTopic, g_currPrompt, g_messages
-    if g_currTopic != DEFAULT_TOPIC: #先保存当前对话
-        addCurrentConvToHistory(client)
-    g_messages = g_messages[:1] + msg.get('messages', [])
-    g_currTopic = msg.get('topic', DEFAULT_TOPIC)
-    g_currPrompt = msg.get('prompt', 'default')
-    promptText = getPromptText(g_currPrompt)
-    if promptText == DEFAULT_PROMPT:
-        g_currPrompt = 'default'
-    elif promptText == g_config.get('custom_prompt'):
-        g_currPrompt = 'custom'
-    g_messages[0]['content'] = promptText
+    #切换到其他会话
+    #msg: 目的消息字典
+    def switchConversation(self, msg):
+        if self.currTopic != DEFAULT_TOPIC: #先保存当前对话
+            self.addCurrentConvToHistory()
+        self.messages = self.messages[:1] + msg.get('messages', [])
+        self.currTopic = msg.get('topic', DEFAULT_TOPIC)
+        self.currPrompt = msg.get('prompt', 'default')
+        promptText = self.getPromptText(self.currPrompt)
+        if promptText == DEFAULT_PROMPT:
+            self.currPrompt = 'default'
+        elif promptText == self.config.get('custom_prompt'):
+            self.currPrompt = 'custom'
+        self.messages[0]['content'] = promptText
     
-#根据prompt名字，返回prompt具体文本
-def getPromptText(promptName):
-    global g_config
-    prompt = ''
-    if (not promptName or promptName == 'custom') and (customPrompt := g_config.get('custom_prompt')):
-        prompt = customPrompt
-    elif promptName != 'default':
-        prompt = loadPrompts().get(promptName)
+    #根据prompt名字，返回prompt具体文本
+    def getPromptText(self, promptName):
+        prompt = ''
+        if (not promptName or promptName == 'custom') and (customPrompt := self.config.get('custom_prompt')):
+            prompt = customPrompt
+        elif promptName != 'default':
+            prompt = self.loadPrompts().get(promptName)
 
-    return prompt if prompt else DEFAULT_PROMPT
+        return prompt if prompt else DEFAULT_PROMPT
 
-#显示菜单，切换当前服务提供商的其他model
-def switchModel(client):
-    global g_cfgFile, g_config
-    provider = g_config.get('provider')
-    model = g_config.get('model')
-    if provider not in AI_LIST:
-        print('Current provider is invalid')
-        return
-
-    models = [item['name'] for item in AI_LIST[provider]['models']]
-    print('')
-    sprint(' Current model ', fg='white', bg='yellow', bold=True)
-    print(f'{provider}/{model}')
-    print('')
-    sprint(' Available models [add ! to persist] ', fg='white', bg='yellow', bold=True)
-    print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(models, 1)))
-    print('')
-    while True:
-        input_ = input('» ')
-        if input_ == 'q':
+    #显示菜单，切换当前服务提供商的其他model
+    def switchModel(self):
+        provider = self.config.get('provider')
+        model = self.config.get('model')
+        if provider not in AI_LIST:
+            print('Current provider is invalid')
             return
-        needSave = False
-        if input_[-1:] == '!': #保存到配置文件
-            input_ = input_[:-1]
-            needSave = True
-        if 1 <= (index := str_to_int(input_)) <= len(models):
-            client.model = models[index - 1]
-            g_config['model'] = client.model
-            if needSave:
-                saveConfig(g_cfgFile, g_config)
-            break
 
-#显示菜单，选择一个会话使用的prompt
-def switchPrompt():
-    global g_currPrompt, g_prompts, g_config, g_messages
-    loadPrompts()
+        models = [item['name'] for item in AI_LIST[provider]['models']]
+        print('')
+        sprint(' Current model ', fg='white', bg='yellow', bold=True)
+        print(f'{provider}/{model}')
+        print('')
+        sprint(' Available models [add ! to persist] ', fg='white', bg='yellow', bold=True)
+        print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(models, 1)))
+        print('')
+        while True:
+            input_ = input('» ')
+            if input_ == 'q':
+                return
+            needSave = input_.endswith('!')
+            input_ = input_.rstrip('!')
+            if 1 <= (index := str_to_int(input_)) <= len(models):
+                self.client.model = models[index - 1]
+                self.config['model'] = self.client.model
+                if needSave:
+                    self.saveConfig(self.config)
+                break
 
-    print('')
-    sprint(' Current prompt ', fg='white', bg='yellow', bold=True)
-    print(g_currPrompt)
-    print('')
-    sprint(' Available prompts ', fg='white', bg='yellow', bold=True)
-    promptNames = ['default', 'custom', *g_prompts.keys()]
-    print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(promptNames, 1)))
-    print('')
-    while True:
-        input_ = input('[q 0 num] » ')
-        if input_ == 'q':
-            break
-        index = str_to_int(input_, -1)
-        if index == 0: #显示当前prompt具体内容
-            print(g_messages[0]['content'])
-            print('')
-            continue
-        elif 1 <= index <= len(promptNames):
-            if index == 1:
-                g_currPrompt = 'default'
-                prompt = DEFAULT_PROMPT
-            elif index == 2:
-                prevPrompt = g_config.get('custom_prompt', '')
-                sprint('Current custom prompt:', bold=True)
-                print(prevPrompt)
+    #显示菜单，选择一个会话使用的prompt
+    def switchPrompt(self):
+        self.loadPrompts()
+
+        print('')
+        sprint(' Current prompt ', fg='white', bg='yellow', bold=True)
+        print(self.currPrompt)
+        print('')
+        sprint(' Available prompts [add ! to persist] ', fg='white', bg='yellow', bold=True)
+        promptNames = ['default', 'custom', *self.prompts.keys()]
+        print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(promptNames, 1)))
+        print('')
+        while True:
+            input_ = input('[q 0 num] » ')
+            if input_ == 'q':
+                break
+            needSave = input_.endswith('!')
+            input_ = input_.rstrip('!')
+            index = str_to_int(input_, -1)
+            if index == 0: #显示当前prompt具体内容
+                print(self.messages[0]['content'])
                 print('')
-                sprint('Provide a new curstom prompt or Enter to use current:', bold=True)
-                newArr = []
-                while (text := input('» ')):
-                    newArr.append(text)
-                prompt = '\n'.join(newArr) or prevPrompt
-                if prompt:
-                    g_currPrompt = 'custom'
+                continue
+            elif 1 <= index <= len(promptNames):
+                if index == 1:
+                    self.currPrompt = 'default'
+                    prompt = DEFAULT_PROMPT
+                elif index == 2:
+                    prevPrompt = self.config.get('custom_prompt', '')
+                    sprint('Current custom prompt:', bold=True)
+                    print(prevPrompt)
+                    print('')
+                    sprint('Provide a new curstom prompt or Enter to use current:', bold=True)
+                    newArr = []
+                    while (text := input('» ')):
+                        newArr.append(text)
+                    prompt = '\n'.join(newArr) or prevPrompt
+                    if prompt:
+                        self.currPrompt = 'custom'
+                else:
+                    self.currPrompt = promptNames[index - 1]
+                    prompt = self.prompts.get(self.currPrompt)
+
+                if prompt: #消息列表第一项为系统prompt
+                    if self.currPrompt == 'custom':
+                        self.config['custom_prompt'] = prompt
+                    self.config['prompt'] = self.currPrompt
+                    self.messages[0]['content'] = prompt
+                    if needSave:
+                        self.saveConfig(self.config)
+                    sprint(f'Prompt set to: {self.currPrompt}', bold=True)
+                break
+
+    #显示命令列表和帮助
+    def showCmdList(self):
+        print('')
+        sprint(' Commands ', fg='white', bg='yellow', bold=True)
+        print('[  num ] choose a conversation to continue')
+        print('[   c  ] continue current conversation')
+        print('[ dnum ] delete one or range conversations')
+        print('[ enum ] export one or range conversations')
+        print('[   m  ] switch to other model')
+        print('[   n  ] start a new conversation')
+        print('[   p  ] choose another prompt')
+        print('[   q  ] quit the program')
+        print('[   ?  ] show the command list')
+
+    #重新输出对话信息，用于切换对话历史
+    def replayConversation(self):
+        for item in self.messages[1:]:
+            if item.get('role') == 'user':
+                self.printUserMessage(item.get('content'))
             else:
-                g_currPrompt = promptNames[index - 1]
-                prompt = g_prompts.get(g_currPrompt)
+                self.printAiResponse(AiResponse(success=True, content=item.get('content')))
+        
+        self.printChatBubble('user', self.currTopic)
 
-            if prompt: #消息列表第一项为系统prompt
-                if g_currPrompt == 'custom':
-                    g_config['custom_prompt'] = prompt
-                g_config['prompt'] = g_currPrompt
-                saveConfig(g_cfgFile, g_config)
-                g_messages[0]['content'] = prompt
-                sprint(f'Prompt set to: {g_currPrompt}', bold=True)
-            break
+    #打印用户输入内容
+    def printUserMessage(self, content):
+        self.printChatBubble('user', self.currTopic)
+        for line in (e for e in content.splitlines() if e):
+            print(f'» {line}')
 
-#显示命令列表和帮助
-def showCmdList():
-    print('')
-    sprint(' Commands ', fg='white', bg='yellow', bold=True)
-    print('[   0  ] {}'.format(style('start a new conversation', fg='bright_black')))
-    print('[  num ] {}'.format(style('choose a conversation to continue', fg='bright_black')))
-    print('[   c  ] {}'.format(style('continue current conversation', fg='bright_black')))
-    print('[ dnum ] {}'.format(style('delete one or range conversations', fg='bright_black')))
-    print('[ enum ] {}'.format(style('export one or range conversations', fg='bright_black')))
-    print('[   m  ] {}'.format(style('switch to other model', fg='bright_black')))
-    print('[   p  ] {}'.format(style('choose another prompt', fg='bright_black')))
-    print('[   q  ] {}'.format(style('quit the program', fg='bright_black')))
-    print('[   ?  ] {}'.format(style('show the command list', fg='bright_black')))
-
-#重新输出对话信息，用于切换对话历史
-def replayConversation():
-    global g_currTopic, g_messages
-    for item in g_messages[1:]:
-        if item.get('role') == 'user':
-            printUserMessage(item.get('content'))
-        else:
-            printAiResponse(AiResponse(success=True, content=item.get('content')))
-    
-    printChatBubble('user', g_currTopic)
-
-#打印用户输入内容
-def printUserMessage(content):
-    global g_currTopic
-    printChatBubble('user', g_currTopic)
-    for line in (e for e in content.splitlines() if e):
-        print(f'» {line}')
-
-#打印AI返回的内容
-def printAiResponse(resp):
-    global g_config
-    printChatBubble('assistant', resp.host)
-    if resp.success:
-        disStyle = g_config.get('display_style', 'markdown')
-        content = resp.content if disStyle == 'plaintext' else markdownToTerm(resp.content)
-        print(content.strip())
-    else:
-        print(resp.error)
-        sprint('Press r to resend the last chat', bold=True)
-
-#简单的处理markdown格式，用于在终端显示粗体斜体等效果
-def markdownToTerm(content):
-    global g_config
-    #标题 (# 或 ## 等)，使用粗体
-    content = re.sub(r'^(#{1,6})\s+?(.*)$', r'\033[1m\2\033[0m', content, flags=re.MULTILINE)
-    
-    #加粗 (**bold** 或 __bold__)
-    content = re.sub(r'(\*\*|__)(.*?)\1', r'\033[1m\2\033[0m', content)
-    
-    #斜体 (*italic* 或 _italic_)
-    content = re.sub(r'(\*|_)(.*?)\1', r'\033[3m\2\033[0m', content)
-
-    #删除线 (~~text~~), 大部分的终端不支持删除线，先取消此功能
-    #content = re.sub(r'(~{1,2})(.*?)\1', r'\033[9m\2\033[0m', content)
-
-    #列表项或序号加粗
-    content = re.sub(r'^( *)(\* |\+ |- |[1-9]+\. )(.*)$', r'\1\033[1m\2\033[0m\3', content, flags=re.MULTILINE)
-
-    #引用行变灰
-    content = re.sub(r'^( *>+ .*)$', r'\033[90m\1\033[0m', content, flags=re.MULTILINE)
-    
-    #删除代码块提示行，保留代码块内容
-    content = re.sub(r'^ *```.*$', '', content, flags=re.MULTILINE)
-
-    #行内代码加粗
-    content = re.sub(r'(`)(.*?)\1', r'\033[1m\2\033[0m', content)
-
-    if g_config.get('display_style', 'markdown') == 'markdown_table':
-        content = mdTableToTerm(content)
-    return content
-
-#处理markdown文本里面的表格，排版对齐以便显示在终端上
-#在电脑上效果还可以
-#但在kindle实测效果不好，因为kindle屏幕太小，排版容易乱
-def mdTableToTerm(content):
-    #假定里面只有一个表格
-    colWidths = []
-    colNums = []
-    table = []
-    prevTableRowIdx = -1
-    lines = content.splitlines()
-    for idx, row in enumerate(lines):
-        if row.startswith('|') and row.endswith('|'):
-            #必须要连续
-            if prevTableRowIdx >= 0 and prevTableRowIdx + 1 != idx:
-                colNums = []
-                break
-            prevTableRowIdx = idx
-            rowArr = [cell.strip() for cell in row.strip('|').split('|')]
-            table.append(rowArr)
-            colWidths.append([len(cell) for cell in rowArr]) #当前行每列的宽度
-            colNums.append(len(rowArr))
-        else:
-            table.append(row)
-    
-    #有一些列数不同，为了避免排版混乱，直接返回原结果
-    if not colNums or any(x != colNums[0] for x in colNums):
-        return '\n'.join(lines)
-
-    colMaxWidths = [max(row[i] for row in colWidths) for i in range(colNums[0])] #每列的最大长度
-
-    def format_row(row, bold=False):
-        return " | ".join(style(cell.ljust(width), bold=bold) for cell, width in zip(row, colMaxWidths))
-    
-    rowIdx = 0
-    for idx in range(len(table)):
-        row = table[idx]
-        if isinstance(row, list):
-            if rowIdx == 0: #表头
-                table[idx] = f'| {format_row(row, bold=True)} |'
-            elif all(not cell.strip('-') for cell in row): #分割线
-                table[idx] = '| ' + "-+-".join('-' * width for width in colMaxWidths) + ' |'
-            else: #内容行
-                table[idx] = f'| {format_row(row)} |'
-            rowIdx += 1
-    return '\n'.join(table)
-
-#在终端打印对话泡泡，显示角色和对话主题
-def printChatBubble(role, topic=''):
-    topic = f' ({topic})' if topic else ''
-    if role == 'user':
-        role, fg, bg, bubFg = ' YOU ', 'white', 'green', 'bright_black'
-    else:
-        role, fg, bg, bubFg = ' AI ', 'white', 'cyan', 'bright_black'
-    #暂时不打印 ╞ ╡，避免不同的终端字体不同而不对齐
-    txt = " {}{} ".format(style(role, fg=fg, bg=bg, bold=True), style(topic, fg=bubFg))
-    charCnt = len(role) + len(topic) + 2
-    sprint('\n╭{}╮'.format('─' * charCnt), fg=bubFg)
-    print(txt)
-    sprint('╰{}╯'.format('─' * charCnt), fg=bubFg)
-
-#更新谈话主题
-def updateTopic(client, msg=None):
-    global g_currTopic, g_messages
-    if msg: #直接在msg字符串上截取
-        words = msg.replace('\n', ' ').replace('"', ' ').replace("'", ' ').split(' ')[:4]
-        g_currTopic = ' '.join(words)[:30].strip() #限制总长度不超过30字节
-    else: #让AI总结
-        messages = g_messages + [{"role": "user", "content": PROMPT_GET_TOPIC}]
-        resp = fetchAiResponse(client, messages)
+    #打印AI返回的内容
+    def printAiResponse(self, resp):
+        self.printChatBubble('assistant', resp.host)
         if resp.success:
-            g_currTopic = resp.content.replace('`', '').replace('"', '').replace('\n', '')[:30]
+            disStyle = self.config.get('display_style', 'markdown')
+            content = resp.content if disStyle == 'plaintext' else self.markdownToTerm(resp.content)
+            print(content.strip())
+        else:
+            print(resp.error)
+            sprint('Press r to resend the last chat', bold=True)
 
-#给AI发请求，返回 AiResponse
-def fetchAiResponse(client, messages):
-    host = ''
-    #if client.name == 'perplexity':
-    #    print('Searching...')
-    try:
-        respTxt, host = client.chat(getTrimmedChat(messages))
-    except:
-        return AiResponse(success=False, error=loc_exc_pos('Error'), host=host)
-    else:
-        return AiResponse(success=True, content=respTxt, host=host)
+    #简单的处理markdown格式，用于在终端显示粗体斜体等效果
+    def markdownToTerm(self, content):
+        #标题 (# 或 ## 等)，使用粗体
+        content = re.sub(r'^(#{1,6})\s+?(.*)$', r'\033[1m\2\033[0m', content, flags=re.MULTILINE)
+        
+        #加粗 (**bold** 或 __bold__)
+        content = re.sub(r'(\*\*|__)(.*?)\1', r'\033[1m\2\033[0m', content)
+        
+        #斜体 (*italic* 或 _italic_)
+        content = re.sub(r'(\*|_)(.*?)\1', r'\033[3m\2\033[0m', content)
 
-#从消息历史中截取符合token长度要求的最近一部分会话，用于发送给AI服务器
-#返回一个新的列表
-def getTrimmedChat(messages: list):
-    global g_config
-    if not messages:
-        return messages
-    limit = int(g_config.get("token_limit", 4000) * 3) #简化token计算公式：字节数/3
-    currLen = len(messages[0]['content']) + 20 # 20='role'/'system'/symbols:[]{},""
-    newMsgs = []
-    for idx in range(len(messages) - 1, 0, -1):
-        role = messages[idx]['role']
-        content = messages[idx]['content']
-        if content.startswith('Error: '): #把谈话上下文里面的错误信息剔除
-            content = ''
-        currLen += len(content) + 20
-        if currLen > limit:
-            break
-        newMsgs.append({'role': role, 'content': content})
-    return messages[:1] + newMsgs[::-1]
+        #删除线 (~~text~~), 大部分的终端不支持删除线，先取消此功能
+        #content = re.sub(r'(~{1,2})(.*?)\1', r'\033[9m\2\033[0m', content)
 
-#主程序入口
-#cfgFile: json配置文件名，为空则使用默认值
-def start(cfgFile):
-    global g_currTopic, g_messages, g_history, g_currPrompt
-    
-    #获取配置数据
-    cfg = loadConfig(cfgFile)
-    if cfg is None:
-        return
+        #列表项或序号加粗
+        content = re.sub(r'^( *)(\* |\+ |- |[1-9]+\. )(.*)$', r'\1\033[1m\2\033[0m\3', content, flags=re.MULTILINE)
 
-    apiKey = cfg.get('api_key')
-    if not apiKey:
-        print('')
-        sprint('Api key is missing', bold=True)
-        sprint('Set it in the config file or run with the -s option', bold=True)
-        print('')
-        input_ = input('Press return key to quit ')
-        return
+        #引用行变灰
+        content = re.sub(r'^( *>+ .*)$', r'\033[90m\1\033[0m', content, flags=re.MULTILINE)
+        
+        #删除代码块提示行，保留代码块内容
+        content = re.sub(r'^ *```.*$', '', content, flags=re.MULTILINE)
 
-    provider = cfg.get('provider')
-    model = cfg.get('model')
-    singleTurn = bool(cfg.get('chat_type') == 'single_turn')
+        #行内代码加粗
+        content = re.sub(r'(`)(.*?)\1', r'\033[1m\2\033[0m', content)
 
-    client = SimpleAiProvider(provider, apiKey=apiKey, model=model, apiHost=cfg.get('api_host'),
-        singleTurn=singleTurn)
-    loadHistory()
-    g_messages = [{"role": "system", "content": ''}] #role: system, user, assistant
-    startNewConversation(client)
+        if self.config.get('display_style', 'markdown') == 'markdown_table':
+            content = self.mdTableToTerm(content)
+        return content
 
-    print('Model: {}'.format(style(f'{provider}/{model}', bold=True)))
-    print('Prompt: {}'.format(style(g_currPrompt, bold=True)))
-    print('Empty line to send, ? to menu, q to quit')
+    #处理markdown文本里面的表格，排版对齐以便显示在终端上
+    #在电脑上效果还可以
+    #但在kindle实测效果不好，因为kindle屏幕太小，排版容易乱
+    def mdTableToTerm(self, content):
+        #假定里面只有一个表格
+        colWidths = []
+        colNums = []
+        table = []
+        prevTableRowIdx = -1
+        lines = content.splitlines()
+        for idx, row in enumerate(lines):
+            if row.startswith('|') and row.endswith('|'):
+                #必须要连续
+                if prevTableRowIdx >= 0 and prevTableRowIdx + 1 != idx:
+                    colNums = []
+                    break
+                prevTableRowIdx = idx
+                rowArr = [cell.strip() for cell in row.strip('|').split('|')]
+                table.append(rowArr)
+                colWidths.append([len(cell) for cell in rowArr]) #当前行每列的宽度
+                colNums.append(len(rowArr))
+            else:
+                table.append(row)
+        
+        #有一些列数不同，为了避免排版混乱，直接返回原结果
+        if not colNums or any(x != colNums[0] for x in colNums):
+            return '\n'.join(lines)
 
-    quitRequested = False
-    #print('')
-    #sprint('Your are using a single-turn conversation model', bold=True)
-    while not quitRequested:
-        msgArr = []
-        printChatBubble('user', g_currTopic)
-        while not quitRequested:
-            sys.stdin.flush()
-            input_ = input("» ")
-            if input_ == 'q' or input_ == 'Q':
-                quitRequested = True
+        colMaxWidths = [max(row[i] for row in colWidths) for i in range(colNums[0])] #每列的最大长度
+
+        #内嵌函数
+        def format_row(row, bold=False):
+            return " | ".join(style(cell.ljust(width), bold=bold) for cell, width in zip(row, colMaxWidths))
+        
+        rowIdx = 0
+        for idx in range(len(table)):
+            row = table[idx]
+            if isinstance(row, list):
+                if rowIdx == 0: #表头
+                    table[idx] = f'| {format_row(row, bold=True)} |'
+                elif all(not cell.strip('-') for cell in row): #分割线
+                    table[idx] = '| ' + "-+-".join('-' * width for width in colMaxWidths) + ' |'
+                else: #内容行
+                    table[idx] = f'| {format_row(row)} |'
+                rowIdx += 1
+        return '\n'.join(table)
+
+    #在终端打印对话泡泡，显示角色和对话主题
+    def printChatBubble(self, role, topic=''):
+        topic = f' ({topic})' if topic else ''
+        if role == 'user':
+            role, fg, bg, bubFg = ' YOU ', 'white', 'green', 'bright_black'
+        else:
+            role, fg, bg, bubFg = ' AI ', 'white', 'cyan', 'bright_black'
+        #暂时不打印 ╞ ╡，避免不同的终端字体不同而不对齐
+        txt = " {}{} ".format(style(role, fg=fg, bg=bg, bold=True), style(topic, fg=bubFg))
+        charCnt = len(role) + len(topic) + 2
+        sprint('\n╭{}╮'.format('─' * charCnt), fg=bubFg)
+        print(txt)
+        sprint('╰{}╯'.format('─' * charCnt), fg=bubFg)
+
+    #更新谈话主题
+    def updateTopic(self, msg=None):
+        if msg: #直接在msg字符串上截取
+            words = msg.replace('\n', ' ').replace('"', ' ').replace("'", ' ').split(' ')[:4]
+            self.currTopic = ' '.join(words)[:30].strip() #限制总长度不超过30字节
+        else: #让AI总结
+            messages = self.messages + [{"role": "user", "content": PROMPT_GET_TOPIC}]
+            resp = self.fetchAiResponse(messages)
+            if resp.success:
+                self.currTopic = resp.content.replace('`', '').replace('"', '').replace('\n', '')[:30]
+
+    #给AI发请求，返回 AiResponse
+    def fetchAiResponse(self, messages):
+        host = ''
+        #if self.client.name == 'perplexity':
+        #    print('Searching...')
+        try:
+            respTxt, host = self.client.chat(self.getTrimmedChat(messages))
+        except:
+            return AiResponse(success=False, error=loc_exc_pos('Error'), host=host)
+        else:
+            return AiResponse(success=True, content=respTxt, host=host)
+
+    #从消息历史中截取符合token长度要求的最近一部分会话，用于发送给AI服务器
+    #返回一个新的列表
+    def getTrimmedChat(self, messages: list):
+        if not messages:
+            return messages
+        limit = int(self.config.get("token_limit", 4000) * 3) #简化token计算公式：字节数/3
+        currLen = len(messages[0]['content']) + 20 # 20='role'/'system'/symbols:[]{},""
+        newMsgs = []
+        for idx in range(len(messages) - 1, 0, -1):
+            role = messages[idx]['role']
+            content = messages[idx]['content']
+            if content.startswith('Error: '): #把谈话上下文里面的错误信息剔除
+                content = ''
+            currLen += len(content) + 20
+            if currLen > limit:
                 break
-            elif input_ == '?':
-                msgArr = []
-                ret = 'reshow'
-                while ret == 'reshow':
-                    ret = processMenu(client)
-                if ret == 'quit':
+            newMsgs.append({'role': role, 'content': content})
+        return messages[:1] + newMsgs[::-1]
+
+    #主循环入口
+    def start(self):
+        cfg = self.config
+        if cfg is None:
+            return
+
+        apiKey = cfg.get('api_key')
+        if not apiKey:
+            print('')
+            sprint('Api key is missing', bold=True)
+            sprint('Set it in the config file or run with the -s option', bold=True)
+            print('')
+            input_ = input('Press return key to quit ')
+            return
+
+        provider = cfg.get('provider')
+        model = cfg.get('model')
+        singleTurn = bool(cfg.get('chat_type') == 'single_turn')
+
+        self.client = SimpleAiProvider(provider, apiKey=apiKey, model=model, apiHost=cfg.get('api_host'),
+            singleTurn=singleTurn)
+        self.history = self.loadHistory()
+        self.startNewConversation()
+
+        print('Model: {}'.format(style(f'{provider}/{model}', bold=True)))
+        print('Prompt: {}'.format(style(self.currPrompt, bold=True)))
+        print('Empty line to send, ? to menu, q to quit')
+
+        quitRequested = False
+        #print('')
+        #sprint('Your are using a single-turn conversation model', bold=True)
+        while not quitRequested:
+            msgArr = []
+            self.printChatBubble('user', self.currTopic)
+            while not quitRequested:
+                sys.stdin.flush()
+                input_ = input("» ")
+                if input_ in ('q', 'Q'):
                     quitRequested = True
                     break
-            else:
-                msg = '\n'.join(msgArr).strip()
-                #输入r重发上一个请求
-                if input_ in ('r', 'R') and not msg and len(g_messages) > 2:
-                    userItem = g_messages[-2] #开头为背景prompt，之后user/assistant交替
-                    msg = userItem.get('content', '')
-                    input_ = ''
-                    for line in msg.splitlines():
-                        print(f'» {line}')
-                    print('')
-
-                if input_: #可以输入多行，逐行累加
-                    msgArr.append(input_)
-                elif msg: #输入一个空行并且之前已经有过输入，发送请求
+                elif input_ == '?':
                     msgArr = []
-                    g_messages.append({"role": 'user', "content": msg})
-                    if len(g_messages) == 2: #第一次交谈，使用用户输出的开头四个单词做为topic
-                        updateTopic(client, msg)
-                    elif len(g_messages) == 4: #第三次交谈，使用ai总结谈话内容做为topic
-                        updateTopic(client)
-                    resp = fetchAiResponse(client, g_messages)
-                    respText = resp.content.strip() if resp.success else ('Error: ' + resp.error)
-                    g_messages.append({"role": 'assistant', "content": respText})
-                    printAiResponse(resp)
-                    printChatBubble('user', g_currTopic)
+                    ret = 'reshow'
+                    while ret == 'reshow':
+                        ret = self.processMenu()
+                    if ret == 'quit':
+                        quitRequested = True
+                        break
+                else:
+                    msg = '\n'.join(msgArr).strip()
+                    #输入r重发上一个请求
+                    if input_ in ('r', 'R') and not msg and len(self.messages) > 2:
+                        userItem = self.messages[-2] #开头为背景prompt，之后user/assistant交替
+                        msg = userItem.get('content', '')
+                        input_ = ''
+                        for line in msg.splitlines():
+                            print(f'» {line}')
+                        print('')
 
-    client.close()
-    #保存当前记录
-    if g_currTopic != DEFAULT_TOPIC:
-        addCurrentConvToHistory(client)
+                    if input_: #可以输入多行，逐行累加
+                        msgArr.append(input_)
+                    elif msg: #输入一个空行并且之前已经有过输入，发送请求
+                        msgArr = []
+                        self.messages.append({"role": 'user', "content": msg})
+                        if len(self.messages) == 2: #第一次交谈，使用用户输出的开头四个单词做为topic
+                            self.updateTopic(msg)
+                        elif len(self.messages) == 4: #第三次交谈，使用ai总结谈话内容做为topic
+                            self.updateTopic()
+                        resp = self.fetchAiResponse(self.messages)
+                        respText = resp.content.strip() if resp.success else ('Error: ' + resp.error)
+                        self.messages.append({"role": 'assistant', "content": respText})
+                        self.printAiResponse(resp)
+                        self.printChatBubble('user', self.currTopic)
 
-#交互式配置过程
-def setup(cfgFile):
-    cfg = {}
-    providers = list(AI_LIST.keys())
-    print('')
-    sprint('Start inkwell config. Press q to abort.', bold=True)
-    print('')
-    sprint(' Providers ', fg='white', bg='yellow', bold=True)
-    print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(providers, 1)))
-    models = []
-    while True:
+        self.client.close()
+        #保存当前记录
+        if self.currTopic != DEFAULT_TOPIC:
+            self.addCurrentConvToHistory()
+
+    #交互式配置过程
+    def setup(self):
+        cfg = {}
+        providers = list(AI_LIST.keys())
+        print('')
+        sprint('Start inkwell config. Press q to abort.', bold=True)
+        print('')
+        sprint(' Providers ', fg='white', bg='yellow', bold=True)
+        print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(providers, 1)))
+        models = []
+        while True:
+            input_ = input('» ')
+            if input_ in ('q', 'Q'):
+                return
+            if 1 <= (index := str_to_int(input_)) <= len(providers):
+                cfg['provider'] = provider = providers[index - 1]
+                models = [item['name'] for item in AI_LIST[provider]['models']]
+                break
+
+        #模型
+        print('')
+        sprint(' Models ', fg='white', bg='yellow', bold=True)
+        print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(models, 1)))
+        while True:
+            input_ = input('» ')
+            if input_ in ('q', 'Q'):
+                return
+            if 1 <= (index := str_to_int(input_)) <= len(models):
+                cfg['model'] = models[index - 1]
+                break
+
+        #Api key
+        print('')
+        sprint(' Api key ', fg='white', bg='yellow', bold=True)
+        while True:
+            input_ = input('» ')
+            if input_ in ('q', 'Q'):
+                return
+            if input_:
+                cfg['api_key'] = input_
+                break
+
+        #主机地址，可以为多个，使用分号分割
+        print('')
+        sprint(' Api host(optional, semicolon-separated) ', fg='white', bg='yellow', bold=True)
         input_ = input('» ')
         if input_ in ('q', 'Q'):
             return
-        if 1 <= (index := str_to_int(input_)) <= len(providers):
-            cfg['provider'] = provider = providers[index - 1]
-            models = [item['name'] for item in AI_LIST[provider]['models']]
-            break
+        cfg['api_host'] = ';'.join([e if e.startswith('http') else 'https://' + e 
+            for e in input_.replace(' ', '').split(';') if e])
 
-    #模型
-    print('')
-    sprint(' Models ', fg='white', bg='yellow', bold=True)
-    print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(models, 1)))
-    while True:
-        input_ = input('» ')
-        if input_ in ('q', 'Q'):
-            return
-        if 1 <= (index := str_to_int(input_)) <= len(models):
-            cfg['model'] = models[index - 1]
-            break
+        #Display style
+        print('')
+        sprint(' Display style ', fg='white', bg='yellow', bold=True)
+        styles = ['markdown', 'markdown_table', 'plaintext']
+        print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(styles, 1)))
+        while True:
+            input_ = input('» [1] ') or '1'
+            if input_ in ('q', 'Q'):
+                return
+            if 1 <= (index := str_to_int(input_)) <= len(styles):
+                cfg['display_style'] = styles[index - 1]
+                break
 
-    #Api key
-    print('')
-    sprint(' Api key ', fg='white', bg='yellow', bold=True)
-    while True:
-        input_ = input('» ')
-        if input_ in ('q', 'Q'):
-            return
-        if input_:
-            cfg['api_key'] = input_
-            break
-
-    #主机地址，可以为多个，使用分号分割
-    print('')
-    sprint(' Api host(optional, semicolon-separated) ', fg='white', bg='yellow', bold=True)
-    input_ = input('» ')
-    if input_ in ('q', 'Q'):
-        return
-    cfg['api_host'] = ';'.join([e if e.startswith('http') else 'https://' + e 
-        for e in input_.replace(' ', '').split(';') if e])
-
-    #Display style
-    print('')
-    sprint(' Display style ', fg='white', bg='yellow', bold=True)
-    styles = ['markdown', 'markdown_table', 'plaintext']
-    print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(styles, 1)))
-    while True:
-        input_ = input('» [1] ') or '1'
-        if input_ in ('q', 'Q'):
-            return
-        if 1 <= (index := str_to_int(input_)) <= len(styles):
-            cfg['display_style'] = styles[index - 1]
-            break
-
-    #是否支持上下文多轮对话
-    print('')
-    sprint(' Chat type ', fg='white', bg='yellow', bold=True)
-    turns = ['Multi-turn (multi-step conversations)', 'Single-turn (One-shot conversations only)']
-    print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(turns, 1)))
-    while True:
-        input_ = input('» [1] ') or '1'
-        if input_ in ('q', 'Q'):
-            return
-        if input_ in ('1', '2'):
-            cfg['chat_type'] = 'multi_turn' if (input_ == '1') else 'single_turn'
-            break
+        #是否支持上下文多轮对话
+        print('')
+        sprint(' Chat type ', fg='white', bg='yellow', bold=True)
+        turns = ['Multi-turn (multi-step conversations)', 'Single-turn (One-shot conversations only)']
+        print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(turns, 1)))
+        while True:
+            input_ = input('» [1] ') or '1'
+            if input_ in ('q', 'Q'):
+                return
+            if input_ in ('1', '2'):
+                cfg['chat_type'] = 'multi_turn' if (input_ == '1') else 'single_turn'
+                break
+            
+        #Conversation token limit
+        print('')
+        sprint(' Conversation token limit ', fg='white', bg='yellow', bold=True)
+        while True:
+            input_ = input('» [4000] ') or '4000'
+            if input_ in ('q', 'Q'):
+                return
+            if input_.isdigit():
+                cfg['token_limit'] = int(input_)
+                if cfg['token_limit'] < 1000:
+                    cfg['token_limit'] = 1000
+                break
         
-    #Conversation token limit
-    print('')
-    sprint(' Conversation token limit ', fg='white', bg='yellow', bold=True)
-    while True:
-        input_ = input('» [4000] ') or '4000'
-        if input_ in ('q', 'Q'):
-            return
-        if input_.isdigit():
-            cfg['token_limit'] = int(input_)
-            if cfg['token_limit'] < 1000:
-                cfg['token_limit'] = 1000
-            break
-    
-    #Max history
-    print('')
-    sprint(' Max history ', fg='white', bg='yellow', bold=True)
-    while True:
-        input_ = input('» [10] ') or '10'
-        if input_ in ('q', 'Q'):
-            return
-        if input_.isdigit():
-            cfg['max_history'] = int(input_)
-            break
+        #Max history
+        print('')
+        sprint(' Max history ', fg='white', bg='yellow', bold=True)
+        while True:
+            input_ = input('» [10] ') or '10'
+            if input_ in ('q', 'Q'):
+                return
+            if input_.isdigit():
+                cfg['max_history'] = int(input_)
+                break
 
-    #配置自定义的prompt
-    print('')
-    sprint(' Custom prompt (optional) ', fg='white', bg='yellow', bold=True)
-    prompts = []
-    while (input_ := input('» ')):
-        prompts.append(input_)
-    if input_ in ('q', 'Q'):
-        return
-    prompt = '\n'.join(prompts).strip()
-    #prompt是prompts.txt里面某一个prompt的标题
-    cfg['prompt'] = 'custom' if prompt else 'default'
-    cfg['custom_prompt'] = prompt
-    
-    saveConfig(cfgFile, cfg)
+        #配置自定义的prompt
+        print('')
+        sprint(' Custom prompt (optional) ', fg='white', bg='yellow', bold=True)
+        prompts = []
+        while (input_ := input('» ')):
+            prompts.append(input_)
+        if input_ in ('q', 'Q'):
+            return
+        prompt = '\n'.join(prompts).strip()
+        #prompt是prompts.txt里面某一个prompt的标题
+        cfg['prompt'] = 'custom' if prompt else 'default'
+        cfg['custom_prompt'] = prompt
+        
+        self.saveConfig(cfg)
 
 #------------------------------------------------------------
 #开始为AI适配器类
@@ -1389,8 +1369,8 @@ if __name__ == "__main__":
         print('')
         input_ = input('Press return key to quit ')
     else:
-        cfgFile = cfgFile or CONFIG_JSON
+        inkwell = InkWell(cfgFile)
         if args.setup:
-            setup(cfgFile)
+            inkwell.setup()
 
-        start(cfgFile)
+        inkwell.start()
