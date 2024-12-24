@@ -287,7 +287,7 @@ class InkWell:
                     for msg in item['messages']:
                         content = self.markdownToHtml(msg["content"])
                         if msg['role'] == 'user':
-                            f.write(f'<div style="margin-bottom: 10px;"><strong>User:</strong><p style="margin-left: 25px;">{content}</p></div><hr/>\n')
+                            f.write(f'<div style="margin-bottom: 10px;"><strong>YOU:</strong><p style="margin-left: 25px;">{content}</p></div><hr/>\n')
                         else:
                             f.write(f'<div style="margin-bottom: 10px;"><strong>AI:</strong><p style="margin-left: 5px;">{content}</p></div><hr/>\n')
                 f.write('</body></html>')
@@ -570,15 +570,15 @@ class InkWell:
     def showCmdList(self):
         print('')
         sprint(' Commands ', fg='white', bg='yellow', bold=True)
-        print('[  num ] choose a conversation to continue')
-        print('[   c  ] continue current conversation')
-        print('[ dnum ] delete one or range conversations')
-        print('[ enum ] export one or range conversations')
-        print('[   m  ] switch to other model')
-        print('[   n  ] start a new conversation')
-        print('[   p  ] choose another prompt')
-        print('[   q  ] quit the program')
-        print('[   ?  ] show the command list')
+        print('{}: Choose a conversation to continue'.format(style(' num', bold=True)))
+        print('{}: Continue the current conversation'.format(style('   c', bold=True)))
+        print('{}: Delete one or a range of conversations'.format(style('dnum', bold=True)))
+        print('{}: Export one or a range of conversations'.format(style('enum', bold=True)))
+        print('{}: Switch to another model'.format(style('   m', bold=True)))
+        print('{}: Start a new conversation'.format('   n', bold=True))
+        print('{}: Choose another prompt'.format('   p', bold=True))
+        print('{}: Quit the program'.format('   q', bold=True))
+        print('{}: Show the command list'.format('   ?', bold=True))
 
     #重新输出对话信息，用于切换对话历史
     def replayConversation(self):
@@ -701,7 +701,7 @@ class InkWell:
     #更新谈话主题
     def updateTopic(self, msg=None):
         if msg: #直接在msg字符串上截取
-            words = msg.replace('\n', ' ').replace('"', ' ').replace("'", ' ').split(' ')[:4]
+            words = msg.replace('\n', ' ').replace('"', ' ').replace("'", ' ').split(' ')[:5]
             self.currTopic = ' '.join(words)[:30].strip() #限制总长度不超过30字节
         else: #让AI总结
             messages = self.messages + [{"role": "user", "content": PROMPT_GET_TOPIC}]
@@ -886,7 +886,7 @@ class InkWell:
         #是否支持上下文多轮对话
         print('')
         sprint(' Chat type ', fg='white', bg='yellow', bold=True)
-        turns = ['Multi-turn (multi-step conversations)', 'Single-turn (One-shot conversations only)']
+        turns = ['Multi-turn (multi-step conversations)', 'Single-turn (merged history as context)']
         print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(turns, 1)))
         while True:
             input_ = input('» [1] ') or '1'
