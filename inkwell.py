@@ -4,9 +4,10 @@
 """运行于终端的Ai助手，主要为Kindle设计，也适用于其他系统的终端
 1. Python >= 3.8
 2. 单文件设计，不依赖任何第三方库
-3. 支持多个api服务器自动轮换，规避流量限制
-4. 支持终端显示格式化后的markdown文本
-5. 支持将会话历史导出为格式良好的电子书
+3. 支持多个api key自动轮换
+4. 支持多个api服务器自动轮换
+5. 支持终端显示格式化后的markdown文本
+6. 支持将会话历史导出为格式良好的电子书
 用法：
 1. 使用命令行参数 -s 或 --setup 开始交互式的初始化和配置
 2. 不带参数执行，自动使用同一目录下的配置文件 config.json，如果没有则自动新建一个默认模板
@@ -21,7 +22,7 @@ import os, sys, re, json, itertools, ssl, argparse
 import http.client
 from urllib.parse import urlsplit
 
-__Version__ = 'v1.4.2 (2024-12-21)'
+__Version__ = 'v1.4.3 (2024-12-29)'
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_JSON = f"{BASE_PATH}/config.json"
 HISTORY_JSON = "history.json" #历史文件会自动跟随程序传入的配置文件路径
@@ -300,6 +301,7 @@ class InkWell:
     #不严谨，可能会排版混乱，但是应付AI聊天的场景应该足够
     def markdownToHtml(self, content):
         import uuid
+        
         #先把多行代码块中的文本提取出来，避免下面其他的处理搞乱代码
         codes = {}
         for mat in re.finditer(r'```(\w+)?\n(.*?)```', content, flags=re.DOTALL):
@@ -310,6 +312,7 @@ class InkWell:
         #行内代码 (`code`)
         content = re.sub(r'`([^`]+)`', r'<code>\1</code>', content)
 
+        #表格
         content = self.mdTableToHtml(content)
 
         #标题 (# 或 ## 等)
@@ -330,6 +333,9 @@ class InkWell:
         #有序列表 (数字加点开头)
         content = re.sub(r'^ *(\d+\.\s+?)(.*)$', r'<div><strong>\1</strong>\2</div>', content, flags=re.MULTILINE)
 
+        #引用 (大于号开头)
+        content = re.sub(r'^\s*>+\s+?(.*)$', r'<blockquote>\1</blockquote>', content, flags=re.MULTILINE)
+
         #链接 [text](url)
         content = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', content)
         
@@ -343,7 +349,7 @@ class InkWell:
             code = code.replace(' ', '&nbsp;')
             content = content.replace(id_, tpl.format(lang=lang, code=code))
             
-        return content
+        return content.replace('\n', '')
 
     #markdown里面的表格转换为html格式的表格
     def mdTableToHtml(self, content):
@@ -650,7 +656,7 @@ class InkWell:
         for idx, row in enumerate(lines):
             if row.startswith('|') and row.endswith('|'):
                 #必须要连续
-                if prevTableRowIdx >= 0 and prevTableRowIdx + 1 != idx:
+                if prevTableRowIdx >= 0 and (prevTableRowIdx + 1) != idx:
                     colNums = []
                     break
                 prevTableRowIdx = idx
@@ -711,15 +717,14 @@ class InkWell:
 
     #给AI发请求，返回 AiResponse
     def fetchAiResponse(self, messages):
-        host = ''
         #if self.client.name == 'perplexity':
         #    print('Searching...')
         try:
-            respTxt, host = self.client.chat(self.getTrimmedChat(messages))
+            respTxt = self.client.chat(self.getTrimmedChat(messages))
         except:
-            return AiResponse(success=False, error=loc_exc_pos('Error'), host=host)
+            return AiResponse(success=False, error=loc_exc_pos('Error'), host=self.client.host)
         else:
-            return AiResponse(success=True, content=respTxt, host=host)
+            return AiResponse(success=True, content=respTxt, host=self.client.host)
 
     #从消息历史中截取符合token长度要求的最近一部分会话，用于发送给AI服务器
     #返回一个新的列表
@@ -852,7 +857,7 @@ class InkWell:
 
         #Api key
         print('')
-        sprint(' Api key ', fg='white', bg='yellow', bold=True)
+        sprint(' Api key (semicolon-separated) ', fg='white', bg='yellow', bold=True)
         while True:
             input_ = input('» ')
             if input_ in ('q', 'Q'):
@@ -863,7 +868,7 @@ class InkWell:
 
         #主机地址，可以为多个，使用分号分割
         print('')
-        sprint(' Api host(optional, semicolon-separated) ', fg='white', bg='yellow', bold=True)
+        sprint(' Api host (optional, semicolon-separated) ', fg='white', bg='yellow', bold=True)
         input_ = input('» ')
         if input_ in ('q', 'Q'):
             return
@@ -939,13 +944,16 @@ class InkWell:
 #开始为AI适配器类
 #------------------------------------------------------------
 #支持的AI服务商列表，models里面的第一项请设置为默认要使用的model
+#context: 输入上下文长度，因为程序采用估计法，建议设小一些。注意：一般的AI的输出长度较短，大约4k/8k
 #rpm(requests per minute)是针对免费用户的，如果是付费用户，一般会高很多，可以自己修改
 #大语言模型发展迅速，估计没多久这些数据会全部过时
 AI_LIST = {
     'google': {'host': 'https://generativelanguage.googleapis.com', 'models': [
-        {'name': 'gemini-1.5-flash', 'rpm': 15, 'context': 128000}, #其实支持100万
-        {'name': 'gemini-1.5-flash-8b', 'rpm': 15, 'context': 128000}, 
-        {'name': 'gemini-1.5-pro', 'rpm': 2, 'context': 128000},],},
+        {'name': 'gemini-1.5-flash', 'rpm': 60, 'context': 128000}, #其实支持100万
+        {'name': 'gemini-1.5-flash-8b', 'rpm': 60, 'context': 128000},
+        {'name': 'gemini-1.5-pro', 'rpm': 10, 'context': 128000},
+        {'name': 'gemini-2.0-flash-exp', 'rpm': 10, 'context': 128000},
+        {'name': 'gemini-2.0-flash-thinking-exp', 'rpm': 10, 'context': 128000},],},
     'openai': {'host': 'https://api.openai.com', 'models': [
         {'name': 'gpt-4o-mini', 'rpm': 3, 'context': 128000},
         {'name': 'gpt-4o', 'rpm': 3, 'context': 128000},
@@ -957,7 +965,8 @@ AI_LIST = {
         {'name': 'claude-3', 'rpm': 5, 'context': 200000},
         {'name': 'claude-2.1', 'rpm': 5, 'context': 100000},],},
     'xai': {'host': 'https://api.x.ai', 'models': [
-        {'name': 'grok-beta', 'rpm': 60, 'context': 128000},],},
+        {'name': 'grok-beta', 'rpm': 60, 'context': 128000},
+        {'name': 'grok-2', 'rpm': 60, 'context': 128000},],},
     'mistral': {'host': 'https://api.mistral.ai', 'models': [
         {'name': 'open-mistral-7b', 'rpm': 60, 'context': 32000},
         {'name': 'mistral-small-latest', 'rpm': 60, 'context': 32000},
@@ -994,19 +1003,21 @@ class HttpResponseError(Exception):
 
 class SimpleAiProvider:
     #name: AI提供商的名字
-    #apiHost: 支持自搭建的API转发服务器，传入以分号分割的地址列表字符串，则逐个使用
+    #apiKey: 如需要多个Key，以分号分割，逐个使用
+    #apiHost: 支持自搭建的API转发服务器，如传入以分号分割的地址列表字符串，则逐个使用
     #singleTurn: 一些API转发服务不支持多轮对话模式，设置此标识，当前仅支持 openai
     def __init__(self, name, apiKey, model=None, apiHost=None, singleTurn=False):
         name = name.lower()
         if name not in AI_LIST:
             raise ValueError(f"Unsupported provider: {name}")
         self.name = name
-        self.apiKey = apiKey
+        self.apiKeys = apiKey.split(';')
+        self.apiKeyIdx = 0
         self.singleTurn = singleTurn
-        self.models = AI_LIST[name]['models']
+        self._models = AI_LIST[name]['models']
         
         #如果传入的model不在列表中，默认使用第一个
-        item = next((m for m in self.models if m['name'] == model), self.models[0])
+        item = next((m for m in self._models if m['name'] == model), self._models[0])
         self.model = item['name']
         self.rpm = item['rpm']
         self.context_size = item['context']
@@ -1022,13 +1033,18 @@ class SimpleAiProvider:
         self.connIdx = 0
         self.createConnections()
 
+    #自动获取下一个ApiKey
+    @property
+    def apiKey(self):
+        ret = self.apiKeys[self.apiKeyIdx]
+        self.apiKeyIdx = (self.apiKeyIdx + 1) % len(self.apiKeys)
+        return ret
+    
     #自动获取列表中下一个连接对象，返回 (index, host tuple, con obj)
     def nextConnection(self):
         index = self.connIdx
-        self.connIdx += 1
-        if self.connIdx >= len(self.connPools):
-            self.connIdx = 0
         host, conn = self.connPools[index]
+        self.connIdx = (self.connIdx + 1) % len(self.connPools)
         return index, host, conn
 
     #创建长连接
@@ -1060,17 +1076,17 @@ class SimpleAiProvider:
         self.connPools[index][1] = conn
 
     #发起一个网络请求，返回json数据
-    def post(self, path, payload, headers, toJson=True) -> dict:
-        #print(f'payload={payload}')
-        #print(f'headers={headers}')
+    def _send(self, path, headers=None, payload=None, toJson=True, method='POST'):
+        if payload:
+            payload = json.dumps(payload)
         retried = 0
         while retried < 2:
             try:
                 index, host, conn = self.nextConnection() #(index, host_tuple, conn_obj)
                 self.host = host.netloc
-                #拼接路径
+                #拼接路径，避免一些边界条件出错
                 url = '/' + host.path.strip('/') + (('?' + host.query) if host.query else '') + path.lstrip('/')
-                conn.request('POST', url, json.dumps(payload), headers)
+                conn.request(method, url, payload, headers)
                 resp = conn.getresponse()
                 body = resp.read().decode("utf-8")
                 #print(resp.reason, ', ', body) #TODO
@@ -1112,32 +1128,39 @@ class SimpleAiProvider:
             raise ValueError(f'The api key is empty')
         name = self.name
         if name == "openai":
-            ret = self._openai_chat(message)
+            return self._openai_chat(message)
         elif name == "anthropic":
-            ret = self._anthropic_chat(message)
+            return self._anthropic_chat(message)
         elif name == "google":
-            ret = self._gemini_chat(message)
+            return self._google_chat(message)
         elif name == "xai":
-            ret = self._grok_chat(message)
+            return self._xai_chat(message)
         elif name == "mistral":
-            ret = self._mistral_chat(message)
+            return self._mistral_chat(message)
         elif name == 'groq':
-            ret = self._groq_chat(message)
+            return self._groq_chat(message)
         elif name == 'perplexity':
-            ret = self._perplexity_chat(message)
+            return self._perplexity_chat(message)
         elif name == "alibaba":
-            ret = self._alibaba_chat(message)
+            return self._alibaba_chat(message)
         else:
             raise ValueError(f"Unsupported provider: {name}")
 
-        return ret, self.host
+    #返回当前服务提供商支持的models列表
+    def models(self, prebuild=True):
+        if self.name in ('openai', 'xai'):
+            return self._openai_models()
+        elif self.name == 'google':
+            return self._google_models()
+        else:
+            return [item['name'] for item in self._models]
 
     #openai的chat接口
-    def _openai_chat(self, message, path='/v1/chat/completions'):
+    def _openai_chat(self, message, path='v1/chat/completions'):
         headers = {'Authorization': f'Bearer {self.apiKey}', 'Content-Type': 'application/json'}
         if isinstance(message, str):
             msg = [{"role": "user", "content": message}]
-        elif self.singleTurn: #将多轮对话手动拼接为单一轮对话
+        elif self.singleTurn and (len(message) > 1): #将多轮对话手动拼接为单一轮对话
             msgArr = ['Previous conversions:\n']
             roleMap = {'system': 'background', 'assistant': 'Your responsed'}
             msgArr.extend([f'{roleMap.get(e["role"], "I asked")}:\n{e["content"]}\n' for e in message[:-1]])
@@ -1149,8 +1172,14 @@ class SimpleAiProvider:
         else:
             msg = message
         payload = {"model": self.model, "messages": msg}
-        data = self.post(path, payload, headers)
+        data = self._send(path, headers=headers, payload=payload, method='POST')
         return data["choices"][0]["message"]["content"]
+
+    #openai的models接口
+    def _openai_models(self):
+        headers = {'Authorization': f'Bearer {self.apiKey}', 'Content-Type': 'application/json'}
+        data = self._send('v1/models', headers=headers, method='GET')
+        return [item['id'] for item in data['data']]
 
     #anthropic的chat接口
     def _anthropic_chat(self, message):
@@ -1171,12 +1200,12 @@ class SimpleAiProvider:
             prompt = f"\n\nHuman: {message}\n\nAssistant:"
             payload = {"prompt": prompt, "model": self.model, "max_tokens_to_sample": 256}
         
-        data = self.post('/v1/complete', payload, headers)
+        data = self._send('v1/complete', headers=headers, payload=payload, method='POST')
         return data["completion"]
 
     #gemini的chat接口
-    def _gemini_chat(self, message):
-        url = f'/v1beta/models/{self.model}:generateContent?key={self.apiKey}'
+    def _google_chat(self, message):
+        url = f'v1beta/models/{self.model}:generateContent?key={self.apiKey}'
         headers = {'Content-Type': 'application/json'}
         if isinstance(message, list): #将openai的payload格式转换为gemini的格式
             msg = []
@@ -1189,29 +1218,37 @@ class SimpleAiProvider:
             payload = message
         else:
             payload = {'contents': [{'role': 'user', 'parts': [{'text': message}]}]}
-        data = self.post(url, payload, headers)
+        data = self._send(url, headers=headers, payload=payload, method='POST')
         contents = data["candidates"][0]["content"]
         return contents['parts'][0]['text']
 
+    #google的models接口
+    def _google_models(self):
+        url = f'v1beta/models?key={self.apiKey}&pageSize=100'
+        headers = {'Content-Type': 'application/json'}
+        data = self._send(url, headers=headers, method='GET')
+        _trim = lambda x: x[7:] if x.startswith('models/') else x
+        return [_trim(item['name']) for item in data['models']]
+
     #grok的chat接口
-    def _grok_chat(self, message):
-        return self._openai_chat(message, path='/v1/chat/completions')
+    def _xai_chat(self, message):
+        return self._openai_chat(message, path='v1/chat/completions')
 
     #mistral的chat接口
     def _mistral_chat(self, message):
-        return self._openai_chat(message, path='/v1/chat/completions')
+        return self._openai_chat(message, path='v1/chat/completions')
 
     #groq的chat接口
     def _groq_chat(self, message):
-        return self._openai_chat(message, path='/openai/v1/chat/completions')
+        return self._openai_chat(message, path='openai/v1/chat/completions')
 
     #perplexity的chat接口
     def _perplexity_chat(self, message):
-        return self._openai_chat(message, path='/chat/completions')
+        return self._openai_chat(message, path='chat/completions')
 
     #通义千问
     def _alibaba_chat(self, message):
-        return self._openai_chat(message, path='/compatible-mode/v1/chat/completions')
+        return self._openai_chat(message, path='compatible-mode/v1/chat/completions')
 
 #duckduckgo转openai格式的封装器，外部接口兼容http.HTTPConnection
 class DuckOpenAi:
@@ -1263,13 +1300,13 @@ class DuckOpenAi:
 
     #使用底层接口实际发送网络请求
     #返回元祖 (status, headers, body)
-    def _send(self, url, heads, payload=None, method='GET'):
+    def _send(self, url, headers=None, payload=None, method='GET'):
         retried = 0
-        headers = self.HEADERS
-        headers.update(heads)
+        _headers = self.HEADERS
+        _headers.update(headers or {})
         while retried < 2:
             try:
-                self.conn.request(method, url, payload, headers)
+                self.conn.request(method, url, payload, _headers)
                 resp = self.conn.getresponse()
                 return resp.status, resp.headers, resp.read()
             except (http.client.CannotSendRequest, http.client.RemoteDisconnected) as e:
@@ -1286,14 +1323,15 @@ class DuckOpenAi:
 
     #发起请求，返回 DuckResponse 实例
     def getresponse(self):
-        status, heads, body = self._send(self.STATUS_URL, {"x-vqd-accept": "1"})
+        status, heads, body = self._send(self.STATUS_URL, headers={"x-vqd-accept": "1"})
         if status != 200:
             return self.DuckResponse(status, heads, body)
             
         vqd4 = heads.get("x-vqd-4", '')
         payload = {"model": "gpt-4o-mini", "messages": self._payload.get('messages', [])}
 
-        status, heads, body = self._send(self.CHAT_URL, {"x-vqd-4": vqd4}, json.dumps(payload), 'POST')
+        status, heads, body = self._send(self.CHAT_URL, headers={"x-vqd-4": vqd4}, 
+            payload=json.dumps(payload), method='POST')
         if status != 200:
             return self.DuckResponse(status, heads, body)
 
