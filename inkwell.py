@@ -7,7 +7,8 @@
 3. 支持多个api key自动轮换
 4. 支持多个api服务器自动轮换
 5. 支持终端显示格式化后的markdown文本
-6. 支持将会话历史导出为格式良好的电子书
+6. 支持对读书摘要笔记(My Clippings)进行AI总结和提问学习
+7. 支持将会话历史导出为格式良好的电子书
 用法：
 1. 使用命令行参数 -s 或 --setup 开始交互式的初始化和配置
 2. 不带参数执行，自动使用同一目录下的配置文件 config.json，如果没有则自动新建一个默认模板
@@ -18,22 +19,27 @@ bin/kterm.sh -e 'python3 /mnt/us/extensions/kterm/ai/inkwell.py --config /mnt/us
 lipc-set-prop com.lab126.cmd wirelessEnable 1
 lipc-set-prop com.lab126.cmd wirelessEnable 0
 """
-import os, sys, re, json, itertools, ssl, argparse
+import os, sys, re, json, itertools, ssl, argparse, datetime
 import http.client
 from urllib.parse import urlsplit
 
-__Version__ = 'v1.4.3 (2024-12-29)'
+__Version__ = 'v1.5 (2024-12-31)'
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_JSON = f"{BASE_PATH}/config.json"
 HISTORY_JSON = "history.json" #历史文件会自动跟随程序传入的配置文件路径
 PROMPTS_FILE = f"{BASE_PATH}/prompts.txt"
+KINDLE_DOC_DIR = '/mnt/us/documents'
+CLIPPINGS_FILE = os.path.join(KINDLE_DOC_DIR, 'My Clippings.txt')
+if not os.path.isfile(CLIPPINGS_FILE):
+    CLIPPINGS_FILE = os.path.join(BASE_PATH, 'My Clippings.txt')
 
 #默认的AI角色配置
-DEFAULT_PROMPT = """You are a helpful personal assistant.
-- Please note that your answers will be displayed on the terminal.
-- So keep answers short as possible and use a suitable format for printing on a terminal."""
+DEFAULT_PROMPT = """You are a helpful assistant.
+- Your answers will be displayed on the terminal.
+- Keep responses concise and formatted for terminal output.
+- Use Markdown for formatting."""
 
-#获取谈话主题的prompt
+#让AI总结此次谈话主题的prompt
 PROMPT_GET_TOPIC = """Please give this conversation a short title.
 - Hard limit of 5 words.
 - Don't mention yourself in it.
@@ -45,6 +51,13 @@ PROMPT_GET_TOPIC = """Please give this conversation a short title.
 - Don't use any accents.
 - Don't use quotes."""
 
+#发送读书笔记的prompt
+CLIPS_PROMPT = """I have a few excerpts from my readings. Please analyze them. I may have follow-up questions based on them.
+Clippings:
+{clips}
+{question}
+"""
+
 #终端的颜色代码表
 _TERMINAL_COLORS = {"black": 30, "red": 31, "green": 32, "yellow": 33, "blue": 34, "magenta": 35,
     "cyan": 36, "white": 37, "reset": 39, "bright_black": 90, "bright_red": 91, "bright_green": 92,
@@ -52,8 +65,9 @@ _TERMINAL_COLORS = {"black": 30, "red": 31, "green": 32, "yellow": 33, "blue": 3
     "orange": (255,165,0), "grey": 90}
 
 DEFAULT_TOPIC = 'new conversation'
-DEFAULT_CFG = {"provider": "google", "model": "gemini-1.5-flash", "api_key": "", "api_host": "", "display_style": "markdown",
-    "chat_type": "multi_turn", "token_limit": 4000, "max_history": 10, "prompt": "custom", "custom_prompt": ""}
+DEFAULT_CFG = {"provider": "google", "model": "gemini-1.5-flash", "api_key": "", "api_host": "", 
+    "display_style": "markdown", "chat_type": "multi_turn", "token_limit": 4000, "max_history": 10, 
+    "prompt": "custom", "custom_prompt": ""}
 
 #AI响应的结构封装
 class AiResponse:
@@ -264,8 +278,8 @@ class InkWell:
 
         #寻找一个最合适的路径
         suffix = '.html'
-        if dir_available('/mnt/us/documents'):
-            bookPath = '/mnt/us/documents'
+        if dir_available(KINDLE_DOC_DIR):
+            bookPath = KINDLE_DOC_DIR
             suffix = '.txt'
         elif dir_available(BASE_PATH):
             bookPath = BASE_PATH
@@ -387,13 +401,12 @@ class InkWell:
     #1 -> [1]; 1-3 -> [1, 2, 3]; 1,3-5 -> [1, 3, 4, 5]
     def parseRange(self, txt):
         ret = []
-        arr = [item.split('-', 1) for item in txt.replace(' ', '').split(',')]
-        for item in arr:
-            if len(item) >= 2:
-                if item[0].isdigit() and item[1].isdigit():
-                    ret.extend(range(int(item[0]), int(item[1]) + 1))
-            elif item[0].isdigit():
-                ret.append(int(item[0]))
+        for e in txt.replace(' ', '').split(','):
+            item = e.split('-', 1)
+            start, end = (item[0], item[0]) if len(item) == 1 else item
+            if start.isdigit() and end.isdigit():
+                start, end = int(start), int(end)
+                ret.extend(range(start, end + 1) if end >= start else range(start, end - 1, -1))
         return ret
 
     #显示菜单项
@@ -420,9 +433,6 @@ class InkWell:
             input_ = input('[num, c, d, e, m, n, p, q, ?] » ').lower()
             if input_ == 'q': #退出
                 return 'quit'
-            elif input_ in ('0', 'c'): #回到当前对话
-                self.replayConversation()
-                break
             elif input_ == '?': #显示命令帮助
                 self.showCmdList()
             elif input_ == 'm': #切换model
@@ -431,13 +441,16 @@ class InkWell:
             elif input_ == 'p': #选择一个prompt
                 self.switchPrompt()
                 self.showMenu()
+            elif input_ == 'c': #分享读书笔记给AI，然后提问总结学习
+                if self.summarizeClippings() == 'quit':
+                    self.replayConversation() #中断了分享读书笔记过程，返回当前对话
+                break
             elif input_[:1] == 'd' and input_[1:2].isdigit(): #删除历史数据
                 self.deleteHistory(self.parseRange(input_[1:]))
                 self.saveHistory()
                 return 'reshow'
             elif input_[:1] == 'e' and input_[1:2].isdigit(): #将历史数据导出为电子书
-                expName = input(f'Filename: ')
-                if expName:
+                if expName := input(f'Filename: '):
                     self.exportHistory(expName, self.parseRange(input_[1:]))
                 else:
                     print('The filename is empty, canceled')
@@ -446,8 +459,9 @@ class InkWell:
                 print(' NEW CONVERSATION STARTED')
                 self.printChatBubble('user', self.currTopic)
                 break
-            elif 1 <= (index := str_to_int(input_)) <= len(self.history): #切换到其他对话
-                self.switchConversation(self.history.pop(index - 1))
+            elif 0 <= (index := str_to_int(input_)) <= len(self.history): #回到当前对话或切换到其他对话
+                if index > 0:
+                    self.switchConversation(self.history.pop(index - 1))
                 self.replayConversation()
                 break
 
@@ -507,8 +521,7 @@ class InkWell:
         print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(models, 1)))
         print('')
         while True:
-            input_ = input('» ')
-            if input_ == 'q':
+            if (input_ := input('» ')) == 'q':
                 return
             needSave = input_.endswith('!')
             input_ = input_.rstrip('!')
@@ -532,8 +545,7 @@ class InkWell:
         print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(promptNames, 1)))
         print('')
         while True:
-            input_ = input('[q 0 num] » ')
-            if input_ == 'q':
+            if (input_ := input('[q 0 num] » ')) == 'q':
                 break
             needSave = input_.endswith('!')
             input_ = input_.rstrip('!')
@@ -572,12 +584,150 @@ class InkWell:
                     sprint(f'Prompt set to: {self.currPrompt}', bold=True)
                 break
 
+    #各种语言的月份转换为整数
+    #后来才发现，其实这个函数用不着了, "My Clippings.txt" 越靠后的就越新
+    def convertMonthToNumber(self, text):
+        months = [
+            ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'], #zh/ja
+            ['january', 'february', 'march', 'april', 'may', 'june',
+                'july', 'august', 'september', 'october', 'november', 'december'], #en
+            ['gennaio', 'febbraio', 'marzo', 'aprile', 'maggio', 'giugno', 
+                'luglio', 'agosto', 'settembre', 'ottobre', 'novembre', 'dicembre'], #it
+            ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+                'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'], #es
+            ['janvier', 'février', 'mars', 'avril', 'mai', 'juin',
+                'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'], #fr
+            ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho',
+                'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'], #pt
+            ['januar', 'februar', 'märz', 'april', 'mai', 'juni',
+                'juli', 'august', 'september', 'oktober', 'november', 'dezember'], #de
+            ['januari', 'februari', 'maart', 'april', 'mei', 'juni', 
+                'juli', 'augustus', 'september', 'oktober', 'november', 'december'], #nl
+            ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+                'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'], #ru
+        ]
+
+        # 将文本中的月份名称转为小写并匹配
+        text = text.lower()
+        for item in months:
+            if text in item:
+                return item.index(text) + 1
+        return -1
+
+    #自动识别各种日期时间格式，返回datetime实例或None
+    #后来才发现，其实这个函数用不着了, "My Clippings.txt" 越靠后的就越新
+    def parseClipTime(self, txt):
+        #识别时间，每种语言格式都不一样
+        #意大利语: Aggiunto in data martedì 31 dicembre 2024 09:23:00
+        #荷兰语: Toegevoegd op dinsdag 31 december 2024 09:17:33
+        #俄语: Добавлено: вторник, 31 декабря 2024 г. в 9:13:37
+        #德语: Hinzugefügt am Dienstag, 31. Dezember 2024 09:08:04
+        #法语: Ajouté le mardi 31 décembre 2024 09:27:49
+        #日语: 作成日: 2024年12月31日火曜日 9:03:19
+        #汉语: 添加于 2024年12月31日星期二 上午9:04:22
+        #葡语: Adicionado: terça-feira, 31 de dezembro de 2024 08:53:52
+        #英语: Added on Tuesday, December 31, 2024 8:31:25 AM
+        patterns = [
+            r"(?P<month>\w+) (?P<day>\d{1,2}),* (?P<year>\d{4}) (?P<hour>\d{1,2}):(?P<minute>\d{1,2}):(?P<second>\d{1,2})",  # 英语
+            r"(?P<month>\w+) (?P<day>\d{1,2}),* (?P<year>\d{4}) (?P<hour>\d{1,2}):(?P<minute>\d{1,2}):(?P<second>\d{1,2}) (?P<am_pm>\w+)",  # 英语，带AM/PM
+            r"(?P<day>\d{1,2})\.* (?P<month>\w+) (?P<year>\d{4}) .*?(?P<hour>\d{1,2}):(?P<minute>\d{1,2}):(?P<second>\d{1,2})",  # 荷兰语等
+            r"(?P<day>\d{1,2}) (?P<month>\w+) (?P<year>\d{4}) (?P<hour>\d{1,2}):(?P<minute>\d{1,2}):(?P<second>\d{1,2}) (?P<am_pm>\w+)",  # 带AM/PM
+            r"(?P<day>\d{1,2}) de (?P<month>\w+) de (?P<year>\d{4}) (?P<hour>\d{1,2}):(?P<minute>\d{1,2}):(?P<second>\d{1,2})",  # 葡语
+            r"(?P<year>\d{4})年(?P<month>\d{1,2})月(?P<day>\d{1,2})日(?P<weekday>\w+) (?P<hour>\d{1,2}):(?P<minute>\d{1,2}):(?P<second>\d{1,2})",  # 中文格式
+            r"(?P<year>\d{4})年(?P<month>\d{1,2})月(?P<day>\d{1,2})日(?P<weekday>\w+) (?P<am_pm>\w+)(?P<hour>\d{1,2}):(?P<minute>\d{1,2}):(?P<second>\d{1,2})",  # 中文“上午/下午”
+        ]
+        
+        txt = txt.replace('上午', 'AM').replace('下午', 'PM')
+        for pat in patterns:
+            if not (match := re.search(pat, txt)):
+                continue
+
+            m = match.groupdict()
+            if (month := self.convertMonthToNumber(m['month'])) < 1:
+                continue
+            
+            if 'am_pm' in m:
+                dateStr = f'{m["year"]}-{month:02d}-{m["day"]} {m["hour"]}:{m["minute"]}:{m["second"]} {m["am_pm"]}'
+                dateFmt = '%Y-%m-%d %H:%M:%S %p'
+            else:
+                dateStr = f'{m["year"]}-{month:02d}-{m["day"]} {m["hour"]}:{m["minute"]}:{m["second"]}'
+                dateFmt = '%Y-%m-%d %H:%M:%S'
+            try:
+                return datetime.datetime.strptime(dateStr, dateFmt)
+            except:
+                break
+        return None
+
+    #读取高亮或读书笔记，返回最新的前10条记录
+    def readClippings(self):
+        if not os.path.isfile(CLIPPINGS_FILE):
+            print('The file {} does not exist.'.format(style(CLIPPINGS_FILE, bold=True)))
+            return []
+
+        try:
+            with open(CLIPPINGS_FILE, 'r', encoding='utf-8') as f:
+                clips = f.read().split('==========')
+        except Exception as e:
+            print(f'Read clippings failed: {str(e)}')
+            return []
+
+        ret = []
+        for item in clips[-10:]: #只显示最新的9个摘要，因为最后一个为空
+            #每个笔记第一行是书名；第二行使用横杠开头，竖杠分割：笔记类型/页数/位置/时间；之后为具体摘要内容
+            lines = item.strip().split('\n', 2)
+            if len(lines) < 3:
+                continue
+            ret.append((lines[0], lines[-1].strip())) #书名，笔记
+        return ret
+
+    #分享一个高亮读书片段给AI，让AI总结和答疑
+    def summarizeClippings(self):
+        myClips = self.readClippings()
+        if not myClips:
+            sprint('There is no clippings now', bold=True)
+            return
+
+        print('')
+        sprint(' The latest clippings ', fg='white', bg='yellow', bold=True)
+        toDisplay = []
+        for idx, item in enumerate(myClips, 1):
+            frag = (item[1][:35] + '...') if len(item[1]) > 35 else item[1]
+            toDisplay.append(f'{idx:2d}. {item[0][:30]}\n    {{}}'.format(style(frag, fg='bright_black')))
+        print('\n'.join(toDisplay))
+        print('')
+        while True:
+            if (input_ := input('[q, num or range] » ')) == 'q':
+                return 'quit'
+            if not (nums := self.parseRange(input_)):
+                continue
+            #提取需要的笔记
+            clips = [myClips[idx] for idx in range(len(myClips)) if (idx + 1) in nums]
+            if not clips:
+                continue
+            questMsg = []
+            while (quest := input('Question » ')) not in ('', 'q', 'Q'):
+                questMsg.append(quest)
+            if quest in ('q', 'Q'):
+                return 'quit'
+            question = '\nQuestion:\n{}'.format('\n'.join(questMsg)) if questMsg else ''
+
+            self.startNewConversation()
+            msg = CLIPS_PROMPT.format(clips='\n'.join([f'- {e[0]}\n{e[1]}' for e in clips]), question=question)
+            self.messages.append({"role": 'user', "content": msg})
+            self.printUserMessage(msg)
+            resp = self.fetchAiResponse(self.messages)
+            respText = resp.content.strip() if resp.success else ('Error: ' + resp.error)
+            self.messages.append({"role": 'assistant', "content": respText})
+            self.printAiResponse(resp)
+            self.printChatBubble('user', self.currTopic) #准备下一轮对话
+            break
+
     #显示命令列表和帮助
     def showCmdList(self):
         print('')
         sprint(' Commands ', fg='white', bg='yellow', bold=True)
         print('{}: Choose a conversation to continue'.format(style(' num', bold=True)))
-        print('{}: Continue the current conversation'.format(style('   c', bold=True)))
+        print('{}: Start a conversation from reading clip'.format(style('   c', bold=True)))
         print('{}: Delete one or a range of conversations'.format(style('dnum', bold=True)))
         print('{}: Export one or a range of conversations'.format(style('enum', bold=True)))
         print('{}: Switch to another model'.format(style('   m', bold=True)))
@@ -624,8 +774,9 @@ class InkWell:
         #斜体 (*italic* 或 _italic_)
         content = re.sub(r'(\*|_)(.*?)\1', r'\033[3m\2\033[0m', content)
 
-        #删除线 (~~text~~), 大部分的终端不支持删除线，先取消此功能
+        #删除线 (~~text~~), 大部分的终端不支持删除线，使用斜体代替
         #content = re.sub(r'(~{1,2})(.*?)\1', r'\033[9m\2\033[0m', content)
+        content = re.sub(r'(~{1,2})(.*?)\1', r'\033[3m\2\033[0m', content)
 
         #列表项或序号加粗
         content = re.sub(r'^( *)(\* |\+ |- |[1-9]+\. )(.*)$', r'\1\033[1m\2\033[0m\3', content, flags=re.MULTILINE)
@@ -646,11 +797,12 @@ class InkWell:
     #处理markdown文本里面的表格，排版对齐以便显示在终端上
     #在电脑上效果还可以
     #但在kindle实测效果不好，因为kindle屏幕太小，排版容易乱
+    #返回排版后的字符串
     def mdTableToTerm(self, content):
-        #假定里面只有一个表格
-        colWidths = []
-        colNums = []
-        table = []
+        #假定里面只有一个表格，如果有多个表格，直接返回
+        table = [] #表格的文本内容 [[col0, col1,...],]，如果不是表格行，则是原行的字符串
+        colWidths = [] #每列文本字数 [[cnt0, cnt1,...],]，用于使用每列最大值进行对齐
+        colNums = [] #每行的列数 [num0, num1,...]，用于判断表格是否有效
         prevTableRowIdx = -1
         lines = content.splitlines()
         for idx, row in enumerate(lines):
@@ -667,26 +819,25 @@ class InkWell:
             else:
                 table.append(row)
         
-        #有一些列数不同，为了避免排版混乱，直接返回原结果
+        #如果有一些列数不同，可能为多个表格，为了避免排版混乱，直接返回原结果
         if not colNums or any(x != colNums[0] for x in colNums):
-            return '\n'.join(lines)
+            return content
 
         colMaxWidths = [max(row[i] for row in colWidths) for i in range(colNums[0])] #每列的最大长度
 
-        #内嵌函数
-        def format_row(row, bold=False):
-            return " | ".join(style(cell.ljust(width), bold=bold) for cell, width in zip(row, colMaxWidths))
+        #内嵌函数，统一左对齐
+        def format_row(row, bold):
+            return "| {} |".format(" | ".join(style(cell.ljust(width), bold=bold) 
+                            for cell, width in zip(row, colMaxWidths)))
         
         rowIdx = 0
         for idx in range(len(table)):
             row = table[idx]
             if isinstance(row, list):
-                if rowIdx == 0: #表头
-                    table[idx] = f'| {format_row(row, bold=True)} |'
-                elif all(not cell.strip('-') for cell in row): #分割线
-                    table[idx] = '| ' + "-+-".join('-' * width for width in colMaxWidths) + ' |'
+                if all(not cell.strip('-:') for cell in row): #分割线
+                    table[idx] = '| ' + "-+-".join(('-' * width) for width in colMaxWidths) + ' |'
                 else: #内容行
-                    table[idx] = f'| {format_row(row)} |'
+                    table[idx] = format_row(row, bold=bool(rowIdx == 0))
                 rowIdx += 1
         return '\n'.join(table)
 
@@ -697,7 +848,7 @@ class InkWell:
             role, fg, bg, bubFg = ' YOU ', 'white', 'green', 'bright_black'
         else:
             role, fg, bg, bubFg = ' AI ', 'white', 'cyan', 'bright_black'
-        #暂时不打印 ╞ ╡，避免不同的终端字体不同而不对齐
+        #不打印中间行左右的 ╞ ╡，避免不同的终端字体不同而不对齐
         txt = " {}{} ".format(style(role, fg=fg, bg=bg, bold=True), style(topic, fg=bubFg))
         charCnt = len(role) + len(topic) + 2
         sprint('\n╭{}╮'.format('─' * charCnt), fg=bubFg)
@@ -717,8 +868,6 @@ class InkWell:
 
     #给AI发请求，返回 AiResponse
     def fetchAiResponse(self, messages):
-        #if self.client.name == 'perplexity':
-        #    print('Searching...')
         try:
             respTxt = self.client.chat(self.getTrimmedChat(messages))
         except:
@@ -746,7 +895,8 @@ class InkWell:
         return messages[:1] + newMsgs[::-1]
 
     #主循环入口
-    def start(self):
+    #clippings: 为True则直接进入选择摘要模式，否则默认新建一个对话
+    def start(self, clippings=False):
         cfg = self.config
         if cfg is None:
             return
@@ -771,20 +921,29 @@ class InkWell:
 
         print('Model: {}'.format(style(f'{provider}/{model}', bold=True)))
         print('Prompt: {}'.format(style(self.currPrompt, bold=True)))
-        print('Empty line to send, ? to menu, q to quit')
+        print('{} send, {} menu, {} clips, {} quit'.format(style(' Enter ', fg='white', bg='cyan'),
+            style(' ? ', fg='white', bg='cyan'), style(' c ', fg='white', bg='cyan'),
+            style(' q ', fg='white', bg='cyan')))
+        #print('Empty line to send, ? to menu, q to quit')
 
         quitRequested = False
-        #print('')
-        #sprint('Your are using a single-turn conversation model', bold=True)
+        #直接进入选择读书摘要界面
+        if not clippings:
+            self.printChatBubble('user', self.currTopic)
+        elif self.summarizeClippings() == 'quit':
+            quitRequested = True
+        
         while not quitRequested:
             msgArr = []
-            self.printChatBubble('user', self.currTopic)
             while not quitRequested:
                 sys.stdin.flush()
                 input_ = input("» ")
                 if input_ in ('q', 'Q'):
                     quitRequested = True
                     break
+                elif input_ == 'c': #进入选择读书摘要界面
+                    if self.summarizeClippings() == 'quit':
+                        self.replayConversation() #中断了分享读书摘要，回到原先的对话
                 elif input_ == '?':
                     msgArr = []
                     ret = 'reshow'
@@ -835,8 +994,7 @@ class InkWell:
         print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(providers, 1)))
         models = []
         while True:
-            input_ = input('» ')
-            if input_ in ('q', 'Q'):
+            if (input_ := input('» ')) in ('q', 'Q'):
                 return
             if 1 <= (index := str_to_int(input_)) <= len(providers):
                 cfg['provider'] = provider = providers[index - 1]
@@ -848,8 +1006,7 @@ class InkWell:
         sprint(' Models ', fg='white', bg='yellow', bold=True)
         print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(models, 1)))
         while True:
-            input_ = input('» ')
-            if input_ in ('q', 'Q'):
+            if (input_ := (input('» [1] ') or '1')) in ('q', 'Q'):
                 return
             if 1 <= (index := str_to_int(input_)) <= len(models):
                 cfg['model'] = models[index - 1]
@@ -859,8 +1016,7 @@ class InkWell:
         print('')
         sprint(' Api key (semicolon-separated) ', fg='white', bg='yellow', bold=True)
         while True:
-            input_ = input('» ')
-            if input_ in ('q', 'Q'):
+            if (input_ := input('» ')) in ('q', 'Q'):
                 return
             if input_:
                 cfg['api_key'] = input_
@@ -869,8 +1025,7 @@ class InkWell:
         #主机地址，可以为多个，使用分号分割
         print('')
         sprint(' Api host (optional, semicolon-separated) ', fg='white', bg='yellow', bold=True)
-        input_ = input('» ')
-        if input_ in ('q', 'Q'):
+        if (input_ := input('» ')) in ('q', 'Q'):
             return
         cfg['api_host'] = ';'.join([e if e.startswith('http') else 'https://' + e 
             for e in input_.replace(' ', '').split(';') if e])
@@ -881,8 +1036,7 @@ class InkWell:
         styles = ['markdown', 'markdown_table', 'plaintext']
         print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(styles, 1)))
         while True:
-            input_ = input('» [1] ') or '1'
-            if input_ in ('q', 'Q'):
+            if (input_ := (input('» [1] ') or '1')) in ('q', 'Q'):
                 return
             if 1 <= (index := str_to_int(input_)) <= len(styles):
                 cfg['display_style'] = styles[index - 1]
@@ -891,22 +1045,20 @@ class InkWell:
         #是否支持上下文多轮对话
         print('')
         sprint(' Chat type ', fg='white', bg='yellow', bold=True)
-        turns = ['Multi-turn (multi-step conversations)', 'Single-turn (merged history as context)']
+        turns = ['multi_turn (multi-step conversations)', 'single_turn (merged history as context)']
         print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(turns, 1)))
         while True:
-            input_ = input('» [1] ') or '1'
-            if input_ in ('q', 'Q'):
+            if (input_ := (input('» [1] ') or '1')) in ('q', 'Q'):
                 return
             if input_ in ('1', '2'):
                 cfg['chat_type'] = 'multi_turn' if (input_ == '1') else 'single_turn'
                 break
-            
+        
         #Conversation token limit
         print('')
-        sprint(' Conversation token limit ', fg='white', bg='yellow', bold=True)
+        sprint(' Context token limit ', fg='white', bg='yellow', bold=True)
         while True:
-            input_ = input('» [4000] ') or '4000'
-            if input_ in ('q', 'Q'):
+            if (input_ := (input('» [4000] ') or '4000')) in ('q', 'Q'):
                 return
             if input_.isdigit():
                 cfg['token_limit'] = int(input_)
@@ -918,8 +1070,7 @@ class InkWell:
         print('')
         sprint(' Max history ', fg='white', bg='yellow', bold=True)
         while True:
-            input_ = input('» [10] ') or '10'
-            if input_ in ('q', 'Q'):
+            if (input_ := (input('» [10] ') or '10')) in ('q', 'Q'):
                 return
             if input_.isdigit():
                 cfg['max_history'] = int(input_)
@@ -929,7 +1080,7 @@ class InkWell:
         print('')
         sprint(' Custom prompt (optional) ', fg='white', bg='yellow', bold=True)
         prompts = []
-        while (input_ := input('» ')):
+        while (input_ := input('» ')) not in ('', 'q', 'Q'):
             prompts.append(input_)
         if input_ in ('q', 'Q'):
             return
@@ -1019,10 +1170,10 @@ class SimpleAiProvider:
         #如果传入的model不在列表中，默认使用第一个
         item = next((m for m in self._models if m['name'] == model), self._models[0])
         self.model = item['name']
-        self.rpm = item['rpm']
+        self._rpm = item['rpm']
         self.context_size = item['context']
-        if self.rpm <= 0:
-            self.rpm = 2
+        if self._rpm <= 0:
+            self._rpm = 2
         if self.context_size < 1000:
             self.context_size = 1000
         #分析主机和url，保存为 SplitResult(scheme,netloc,path,query,frament)元祖
@@ -1032,6 +1183,11 @@ class SimpleAiProvider:
         self.host = '' #当前正在使用的 netloc
         self.connIdx = 0
         self.createConnections()
+
+    #返回速率限制，如果有多个host或key，则速率可以倍数放大
+    @property
+    def rpm(self):
+        return int(self._rpm * max([len(self.connPools), len(self.apiKeys)]))
 
     #自动获取下一个ApiKey
     @property
@@ -1384,6 +1540,7 @@ def getArg():
     parser = argparse.ArgumentParser()
     parser.add_argument("-s", "--setup", action="store_true", help="Start interactive configuration")
     parser.add_argument("-c", "--config", metavar="FILE", help="Specify a configuration file")
+    parser.add_argument("-k", "--clippings", action="store_true", help="Start in clippings")
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -1411,4 +1568,4 @@ if __name__ == "__main__":
         if args.setup:
             inkwell.setup()
 
-        inkwell.start()
+        inkwell.start(args.clippings)
