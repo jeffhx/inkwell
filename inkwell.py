@@ -8,7 +8,7 @@
 4. 支持多个api服务器自动轮换
 5. 支持终端显示格式化后的markdown文本
 6. 支持对读书摘要笔记(My Clippings)进行AI总结和提问学习
-7. 支持将会话历史导出为格式良好的电子书
+7. 支持将会话历史导出为格式良好的电子书或发送至邮件
 用法：
 1. 使用命令行参数 -s 或 --setup 开始交互式的初始化和配置
 2. 不带参数执行，自动使用同一目录下的配置文件 config.json，如果没有则自动新建一个默认模板
@@ -65,9 +65,10 @@ _TERMINAL_COLORS = {"black": 30, "red": 31, "green": 32, "yellow": 33, "blue": 3
     "orange": (255,165,0), "grey": 90}
 
 DEFAULT_TOPIC = 'new conversation'
-DEFAULT_CFG = {"provider": "google", "model": "gemini-1.5-flash", "api_key": "", "api_host": "", 
+DEFAULT_CFG = {"provider": "", "model": "", "api_key": "", "api_host": "", 
     "display_style": "markdown", "chat_type": "multi_turn", "token_limit": 4000, "max_history": 10, 
-    "prompt": "custom", "custom_prompt": ""}
+    "prompt": "default", "custom_prompt": "", "smtp_sender": "", "smtp_host": "", "smtp_username": "",
+    "smtp_password": ""}
 
 #AI响应的结构封装
 class AiResponse:
@@ -264,6 +265,8 @@ class InkWell:
             self.messages = self.messages[:1]
 
     #导出某些历史信息到电子书
+    #如果expName为电子邮件地址，则发送邮件，否则保存到文件
+    #indexList: 需要导出的历史索引号列表
     def exportHistory(self, expName, indexList):
         # 0 为导出当前会话
         history = [self.history[index - 1] if index else {'topic': self.currTopic, 'messages': self.messages[1:]}
@@ -272,48 +275,91 @@ class InkWell:
         if not history:
             print('No conversation match the selected number')
             return
-
-        def dir_available(dir_):
-            return os.path.isdir(dir_) and os.access(dir_, os.W_OK)
-
-        #寻找一个最合适的路径
-        suffix = '.html'
-        if dir_available(KINDLE_DOC_DIR):
-            bookPath = KINDLE_DOC_DIR
-            suffix = '.txt'
-        elif dir_available(BASE_PATH):
-            bookPath = BASE_PATH
-        elif dir_available(os.path.dirname(self.cfgFile)):
-            bookPath = os.path.dirname(self.cfgFile)
-        elif dir_available(os.path.expanduser('~')):
-            bookPath = os.path.expanduser('~')
-        else:
-            print('Cannot find a writeable directory')
-            return
         
-        if os.path.splitext(expName)[-1] == suffix:
-            suffix = ''
-        expFileName = f"{bookPath}/{expName}{suffix}"
+        isEmail = bool('@' in expName)
+        if not isEmail: #寻找一个最合适的路径
+            _writeable = lambda dir_: os.path.isdir(dir_) and os.access(dir_, os.W_OK)
+            paths = [(KINDLE_DOC_DIR, '.txt'), (BASE_PATH, '.html'),
+                (os.path.dirname(self.cfgFile), '.html'), (os.path.expanduser('~'), '.html')]
+            for path, suffix in paths:
+                if _writeable(path):
+                    bookPath = path
+                    break
+            else:
+                print('Cannot find a writeable directory')
+                return
+            
+            suffix = '' if os.path.splitext(expName)[-1].lower() == suffix else suffix
+            expName = f"{bookPath}/{expName}{suffix}"
+
+        #生成html文件内容
+        htmlContent = ['<!DOCTYPE html>\n<html>\n<head>\n<meta charset="UTF-8"><title>AI Chat History</title></head><body>']
+        for idx, item in enumerate(history, 1):
+            htmlContent.append(f"<h1>{item['topic']}</h1><hr/>")
+            for msg in item['messages']:
+                content = self.markdownToHtml(msg["content"], wrapCode=not isEmail)
+                if msg['role'] == 'user':
+                    htmlContent.append(f'<div style="margin-bottom:10px;"><strong>YOU:</strong><p style="margin-left:25px;">{content}</p></div><hr/>')
+                else:
+                    htmlContent.append(f'<div style="margin-bottom:10px;"><strong>AI:</strong><p style="margin-left:5px;">{content}</p></div><hr/>')
+        htmlContent.append('</body></html>')
         try:
-            with open(expFileName, 'w', encoding='utf-8') as f:
-                f.write('<!DOCTYPE html>\n<html lang="zh">\n<head><meta charset="UTF-8"><title>AI Chat History</title></head><body>')
-                for idx, item in enumerate(history, 1):
-                    f.write(f"<h1>Topic: {item['topic']}</h1><hr/>\n")
-                    for msg in item['messages']:
-                        content = self.markdownToHtml(msg["content"])
-                        if msg['role'] == 'user':
-                            f.write(f'<div style="margin-bottom: 10px;"><strong>YOU:</strong><p style="margin-left: 25px;">{content}</p></div><hr/>\n')
-                        else:
-                            f.write(f'<div style="margin-bottom: 10px;"><strong>AI:</strong><p style="margin-left: 5px;">{content}</p></div><hr/>\n')
-                f.write('</body></html>')
+            if isEmail:
+                self.smtpSendMail(expName, '\n'.join(htmlContent))
+            else:
+                with open(expName, 'w', encoding='utf-8') as f:
+                    f.write('\n'.join(htmlContent))
         except Exception as e:
-            print('Could not export to {}: {}\n'.format(style(expFileName, bold=True), str(e)))
+            print('Could not export to {}: {}\n'.format(style(expName, bold=True), str(e)))
         else:
-            print("Successfully exported to {}\n".format(style(expFileName, bold=True)))
+            print("Successfully exported to {}\n".format(style(expName, bold=True)))
+
+    #使用smtp发送邮件，此函数可能会抛出异常
+    def smtpSendMail(self, to, content):
+        import smtplib
+        from email.mime.base import MIMEBase
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+        from email.encoders import encode_base64
+
+        sender = self.config.get('smtp_sender', '')
+        host = self.config.get('smtp_host', '')
+        username = self.config.get('smtp_username', '')
+        password = self.config.get('smtp_password', '')
+        if not all([sender, host, username, password, host.split(':')[-1].isdigit()]):
+            raise ValueError('Some configuration items are missing')
+
+        host, port = host.split(':')
+        port = int(port)
+        
+        to = [to] if isinstance(to, str) else to
+        message = MIMEMultipart()
+        message['Subject'] = 'AI Chat History'
+        message['From'] = sender
+        message['To'] = ', '.join(to)
+        body = 'This email contains the AI conversation history. The detailed content is in the attachment, sent by Inkwell.'
+        message.attach(MIMEText(body, 'plain', _charset='utf-8'))
+        part = MIMEBase('application', 'octet-stream')
+        part.set_payload(content.encode('utf-8'))
+        part.add_header('Content-Disposition', 'attachment', filename=('utf-8', '', 'conversation.html'))
+        encode_base64(part)
+        message.attach(part)
+
+        klass = smtplib.SMTP_SSL if port == 465 else smtplib.SMTP
+        with klass(host=host, port=port) as server:
+            server.set_debuglevel(0) #0-no debug info, 1-base, 2- verbose
+            server.connect(host, port)
+            server.ehlo()
+            if port == 587:
+                server.starttls()
+                server.ehlo()
+            server.login(user=username, password=password)
+            server.sendmail(sender, to, message.as_string())
 
     #简单的markdown转换为html，只转换常用的几个格式
     #不严谨，可能会排版混乱，但是应付AI聊天的场景应该足够
-    def markdownToHtml(self, content):
+    #wrapCode: 使用table套在code代码段外模拟一个边框
+    def markdownToHtml(self, content, wrapCode=True):
         import uuid
         
         #先把多行代码块中的文本提取出来，避免下面其他的处理搞乱代码
@@ -357,13 +403,16 @@ class InkWell:
         content = re.sub(r'([^\n]+)', r'<div>\1</div>', content)
 
         #恢复多行代码块，Kindle不支持div边框，所以在代码块外套一个table，使用table的外框
-        tpl = ('<table border="1" cellspacing="0" width="100%" style="background-color:#f9f9f9;">'
-            '<tr><td><pre><code class="{lang}">{code}</code></pre></td></tr></table>')
+        if wrapCode:
+            tpl = ('<table border="1" cellspacing="0" width="100%" style="background-color:#f9f9f9;">'
+                '<tr><td><pre><code class="{lang}">{code}</code></pre></td></tr></table>')
+        else:
+            tpl = '<pre style="border:1px solid #555555;padding:10px;background-color:#f9f9f9;"><code class="{lang}">{code}</code></pre>'
         for id_, (lang, code) in codes.items():
             code = code.replace(' ', '&nbsp;')
             content = content.replace(id_, tpl.format(lang=lang, code=code))
             
-        return content.replace('\n', '')
+        return content
 
     #markdown里面的表格转换为html格式的表格
     def mdTableToHtml(self, content):
@@ -450,7 +499,7 @@ class InkWell:
                 self.saveHistory()
                 return 'reshow'
             elif input_[:1] == 'e' and input_[1:2].isdigit(): #将历史数据导出为电子书
-                if expName := input(f'Filename: '):
+                if expName := input(f'Filename/Email: '):
                     self.exportHistory(expName, self.parseRange(input_[1:]))
                 else:
                     print('The filename is empty, canceled')
@@ -459,7 +508,7 @@ class InkWell:
                 print(' NEW CONVERSATION STARTED')
                 self.printChatBubble('user', self.currTopic)
                 break
-            elif 0 <= (index := str_to_int(input_)) <= len(self.history): #回到当前对话或切换到其他对话
+            elif 0 <= (index := str_to_int(input_, -1)) <= len(self.history): #回到当前对话或切换到其他对话
                 if index > 0:
                     self.switchConversation(self.history.pop(index - 1))
                 self.replayConversation()

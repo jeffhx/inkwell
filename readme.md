@@ -7,7 +7,7 @@ Inkwell是一个运行于终端的Ai助手，主要为Kindle设计，也适用�
 5. 支持多个api服务器自动轮换
 6. 支持在终端显示格式化后的markdown文本
 7. 支持对读书摘要笔记(My Clippings)进行AI总结和提问学习
-8. 支持将会话历史导出为格式良好的电子书
+8. 支持将会话历史导出为格式良好的电子书或发送至邮件
 
 
 # 安装
@@ -30,7 +30,11 @@ Inkwell是一个运行于终端的Ai助手，主要为Kindle设计，也适用�
 * token_limit: 输入上下文token限制，不建议填写太大
 * max_history: 保存的历史会话个数。每个会话里面的轮数不受限
 * prompt: 会话使用的系统prompt名字，default/custom为特殊值，其他为prompts.txt的自定义名字
-* custom_prompt: 如prompt="custom"，则使用此配置
+* custom_prompt: 如 `prompt="custom"`，则使用此配置
+* smtp_sender: 可选，邮件发送人地址
+* smtp_host: 可选，SMTP服务器地址和端口，比如: `smtp.gmail.com:587`
+* smtp_username: 可选，SMTP用户名
+* smtp_password: 可选，SMTP秘钥
 
 
 # 用法
