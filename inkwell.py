@@ -19,7 +19,7 @@ bin/kterm.sh -e 'python3 /mnt/us/extensions/kterm/ai/inkwell.py --config /mnt/us
 lipc-set-prop com.lab126.cmd wirelessEnable 1
 lipc-set-prop com.lab126.cmd wirelessEnable 0
 """
-import os, sys, re, json, itertools, ssl, argparse, datetime
+import os, sys, re, json, ssl, argparse
 import http.client
 from urllib.parse import urlsplit
 
@@ -632,80 +632,6 @@ class InkWell:
                         self.saveConfig(self.config)
                     sprint(f'Prompt set to: {self.currPrompt}', bold=True)
                 break
-
-    #各种语言的月份转换为整数
-    #后来才发现，其实这个函数用不着了, "My Clippings.txt" 越靠后的就越新
-    def convertMonthToNumber(self, text):
-        months = [
-            ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12'], #zh/ja
-            ['january', 'february', 'march', 'april', 'may', 'june',
-                'july', 'august', 'september', 'october', 'november', 'december'], #en
-            ['gennaio', 'febbraio', 'marzo', 'aprile', 'maggio', 'giugno', 
-                'luglio', 'agosto', 'settembre', 'ottobre', 'novembre', 'dicembre'], #it
-            ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
-                'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'], #es
-            ['janvier', 'février', 'mars', 'avril', 'mai', 'juin',
-                'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre'], #fr
-            ['janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho',
-                'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'], #pt
-            ['januar', 'februar', 'märz', 'april', 'mai', 'juni',
-                'juli', 'august', 'september', 'oktober', 'november', 'dezember'], #de
-            ['januari', 'februari', 'maart', 'april', 'mei', 'juni', 
-                'juli', 'augustus', 'september', 'oktober', 'november', 'december'], #nl
-            ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
-                'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'], #ru
-        ]
-
-        # 将文本中的月份名称转为小写并匹配
-        text = text.lower()
-        for item in months:
-            if text in item:
-                return item.index(text) + 1
-        return -1
-
-    #自动识别各种日期时间格式，返回datetime实例或None
-    #后来才发现，其实这个函数用不着了, "My Clippings.txt" 越靠后的就越新
-    def parseClipTime(self, txt):
-        #识别时间，每种语言格式都不一样
-        #意大利语: Aggiunto in data martedì 31 dicembre 2024 09:23:00
-        #荷兰语: Toegevoegd op dinsdag 31 december 2024 09:17:33
-        #俄语: Добавлено: вторник, 31 декабря 2024 г. в 9:13:37
-        #德语: Hinzugefügt am Dienstag, 31. Dezember 2024 09:08:04
-        #法语: Ajouté le mardi 31 décembre 2024 09:27:49
-        #日语: 作成日: 2024年12月31日火曜日 9:03:19
-        #汉语: 添加于 2024年12月31日星期二 上午9:04:22
-        #葡语: Adicionado: terça-feira, 31 de dezembro de 2024 08:53:52
-        #英语: Added on Tuesday, December 31, 2024 8:31:25 AM
-        patterns = [
-            r"(?P<month>\w+) (?P<day>\d{1,2}),* (?P<year>\d{4}) (?P<hour>\d{1,2}):(?P<minute>\d{1,2}):(?P<second>\d{1,2})",  # 英语
-            r"(?P<month>\w+) (?P<day>\d{1,2}),* (?P<year>\d{4}) (?P<hour>\d{1,2}):(?P<minute>\d{1,2}):(?P<second>\d{1,2}) (?P<am_pm>\w+)",  # 英语，带AM/PM
-            r"(?P<day>\d{1,2})\.* (?P<month>\w+) (?P<year>\d{4}) .*?(?P<hour>\d{1,2}):(?P<minute>\d{1,2}):(?P<second>\d{1,2})",  # 荷兰语等
-            r"(?P<day>\d{1,2}) (?P<month>\w+) (?P<year>\d{4}) (?P<hour>\d{1,2}):(?P<minute>\d{1,2}):(?P<second>\d{1,2}) (?P<am_pm>\w+)",  # 带AM/PM
-            r"(?P<day>\d{1,2}) de (?P<month>\w+) de (?P<year>\d{4}) (?P<hour>\d{1,2}):(?P<minute>\d{1,2}):(?P<second>\d{1,2})",  # 葡语
-            r"(?P<year>\d{4})年(?P<month>\d{1,2})月(?P<day>\d{1,2})日(?P<weekday>\w+) (?P<hour>\d{1,2}):(?P<minute>\d{1,2}):(?P<second>\d{1,2})",  # 中文格式
-            r"(?P<year>\d{4})年(?P<month>\d{1,2})月(?P<day>\d{1,2})日(?P<weekday>\w+) (?P<am_pm>\w+)(?P<hour>\d{1,2}):(?P<minute>\d{1,2}):(?P<second>\d{1,2})",  # 中文“上午/下午”
-        ]
-        
-        txt = txt.replace('上午', 'AM').replace('下午', 'PM')
-        for pat in patterns:
-            if not (match := re.search(pat, txt)):
-                continue
-
-            m = match.groupdict()
-            if (month := self.convertMonthToNumber(m['month'])) < 1:
-                continue
-            
-            if 'am_pm' in m:
-                dateStr = f'{m["year"]}-{month:02d}-{m["day"]} {m["hour"]}:{m["minute"]}:{m["second"]} {m["am_pm"]}'
-                dateFmt = '%Y-%m-%d %H:%M:%S %p'
-            else:
-                dateStr = f'{m["year"]}-{month:02d}-{m["day"]} {m["hour"]}:{m["minute"]}:{m["second"]}'
-                dateFmt = '%Y-%m-%d %H:%M:%S'
-            try:
-                return datetime.datetime.strptime(dateStr, dateFmt)
-            except:
-                break
-        return None
 
     #读取高亮或读书笔记，返回最新的前10条记录
     def readClippings(self):
