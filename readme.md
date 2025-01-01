@@ -17,9 +17,12 @@ __English__ · [简体中文](readme_zh.md)
 
 
 **Screen shots**       
-![scr1](pic/scr1.png)  ![scr2](pic/scr2.png)  
-![scr3](pic/scr3.png)  ![scr4](pic/scr4.png)  
-![scr5](pic/scr5.png)  ![scr6](pic/scr6.png)  
+<img src="pic/scr1.png" alt="src1" width="339" height="439">
+<img src="pic/scr2.png" alt="src2" width="339" height="439">
+<img src="pic/scr3.png" alt="src3" width="339" height="439">
+<img src="pic/scr4.png" alt="src4" width="339" height="439">
+<img src="pic/scr5.png" alt="src5" width="339" height="439">
+<img src="pic/scr6.png" alt="src6" width="339" height="439">
 
 
 
