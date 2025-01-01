@@ -23,7 +23,7 @@ import os, sys, re, json, ssl, argparse
 import http.client
 from urllib.parse import urlsplit
 
-__Version__ = 'v1.5 (2024-12-31)'
+__Version__ = 'v1.5.1 (2025-01-01)'
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_JSON = f"{BASE_PATH}/config.json"
 HISTORY_JSON = "history.json" #历史文件会自动跟随程序传入的配置文件路径

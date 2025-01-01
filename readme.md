@@ -1,104 +1,117 @@
-# 简介
-Inkwell是一个运行于终端的Ai助手，主要为Kindle设计，也适用于其他系统的终端
-1. Python >= 3.8
-2. 单文件设计，不依赖任何第三方库
-3. 支持openai/google/xai/anthropic/mistral/groq/perplexity/alibaba
-4. 支持多个api key自动轮换
-5. 支持多个api服务器自动轮换
-6. 支持在终端显示格式化后的markdown文本
-7. 支持对读书摘要笔记(My Clippings)进行AI总结和提问学习
-8. 支持将会话历史导出为格式良好的电子书或发送至邮件
+__English__ · [简体中文](readme_zh.md)
+
+---
+
+# Introduction  
+**Inkwell** is a terminal-based AI assistant primarily designed for Kindle but also compatible with other terminal systems.  
+
+1. **Python >= 3.8**  
+2. Single-file design, no third-party library dependencies.  
+3. Displays formatted Markdown text in the terminal.  
+4. Summarizes and enables interactive Q&A with Kindle **My Clippings** (reading highlights and notes).  
+5. Exports conversation history as well-formatted eBooks or sends them via email.  
+6. Supports multiple AI providers: OpenAI, Google, xAI, Anthropic, Mistral, Groq, Perplexity, Alibaba.  
+7. Automatically switch between multiple API keys.  
+8. Automatically switch between multiple API servers.  
 
 
-# 安装
-1. 确保Kindle已经越狱，并且安装了KUAL和 [Python3](https://www.mobileread.com/forums/showthread.php?t=225030)
-2. 将inkwell.zip解压到Kindle书籍根目录(/mnt/us)
+
+**Screen shots**       
+![scr1](pic/scr1.png)  ![scr2](pic/scr2.png)  
+![scr3](pic/scr3.png)  ![scr4](pic/scr4.png)  
+![scr5](pic/scr5.png)  ![scr6](pic/scr6.png)  
 
 
-# 配置
-有两种配置方法，任选其一：
-1. 在电脑上直接打开inkwell目录下的 `config.json`，填写对应字段，然后拷贝到Kindle
-2. 点击KUAL菜单项`Inkwell Setup`，然后根据向导完成配置过程，不明白的步骤直接回车即可
 
-## 配置项说明
-* provider: 提供AI服务的公司。`openai/google/xai/anthropic/mistral/groq/perplexity/alibaba`
-* model: 每个AI服务提供的Model
-* api_key: Api秘钥，可以多个，使用分号分隔
-* api_host: 如果是第三方提供的API服务，可以填写此项，多个地址使用分号分隔
-* display_style: 文本显示模式。`markdown` - 格式化markdown文本；`markdown_table` - 格式化markdown文本和表格；`plaintext` - 显示为纯文本
-* chat_type: API会话模式。`multi_turn` - 正常的多轮对话模式；`single_turn` - 针对一些不支持多轮对话的第三方API服务，程序内使用字符串拼接模拟多轮对话
-* token_limit: 输入上下文token限制，不建议填写太大
-* max_history: 保存的历史会话个数。每个会话里面的轮数不受限
-* prompt: 会话使用的系统prompt名字，default/custom为特殊值，其他为prompts.txt的自定义名字
-* custom_prompt: 如 `prompt="custom"`，则使用此配置
-* smtp_sender: 可选，邮件发送人地址
-* smtp_host: 可选，SMTP服务器地址和端口，比如: `smtp.gmail.com:587`
-* smtp_username: 可选，SMTP用户名
-* smtp_password: 可选，SMTP秘钥
+# Installation  
+1. Ensure your Kindle is jailbroken and has **KUAL** and [Python3](https://www.mobileread.com/forums/showthread.php?t=225030) installed.  
+2. Extract `inkwell.zip` to the Kindle’s root directory (`/mnt/us`).  
 
+# Configuration  
+There are two ways to configure Inkwell:  
+1. Open the `config.json` file in the Inkwell directory on your computer, edit the fields, and copy it back to your Kindle.  
+2. Select `Inkwell Setup` from the **KUAL menu** and follow the wizard. Simply press Enter for any unclear steps.  
 
-# 用法
-1. 不带参数执行，自动使用同一目录下的配置文件 config.json
-2. 需要不同的配置可以传入config参数 `python3 Inkwell.py --config path/to/config.json`
-3. 如果需要进入程序马上可以选择读书摘要进行AI提问，可以添加命令行参数 `--clippings`
-4. 支持发送多行文本，输入一个空行马上启动发送
-5. 任何时候输入 `?` 进入菜单界面，`q` 退出
-
-
-# 其他功能说明
-## 针对读书摘要进行AI提问
-Inkwell有一个比较方便的功能，在读书过程中碰到不懂的或需要了解更多背景信息的内容，在阅读界面选择对应的内容后，进入Inkwell的`clippings`界面，显示最近的9个摘要（9为最新的），可以将一个或多个摘要文本发送给AI，并且进行多轮提问。
-这是比较重要的功能，所有有多个入口点，任选一个：
-1. 启动参数 `--clippings`
-2. 主界面输入 `c`
-3. 菜单界面输入 `c`
+### Configuration Options  
+- **provider**: AI provider. Supported values: `openai/google/xai/anthropic/mistral/groq/perplexity/alibaba`.  
+- **model**: The model provided by the chosen AI service.  
+- **api_key**: API keys (multiple keys separated by semicolons).  
+- **api_host**: Third-party API server addresses (separated by semicolons).  
+- **display_style**: Text display mode. Options:  
+  - `markdown`: Formatted Markdown text.  
+  - `markdown_table`: Formatted Markdown with table support.  
+  - `plaintext`: Plain text.  
+- **chat_type**: Chat session mode.  
+  - `multi_turn`: Standard multi-turn conversation.  
+  - `single_turn`: Simulated multi-turn for APIs that don’t support stateful sessions.  
+- **token_limit**: Context token limit (keep reasonable).  
+- **max_history**: Maximum number of saved conversation histories (conversation length is unlimited).  
+- **prompt**: System prompt for conversations. Options:  
+  - `default/custom`: Special values.  
+  - Others refer to names in `prompts.txt`.  
+- **custom_prompt**: Used when `prompt="custom"`.  
+- **smtp_sender**: Optional, email sender address.  
+- **smtp_host**: Optional, SMTP server and port (e.g., `smtp.gmail.com:587`).  
+- **smtp_username**: Optional, SMTP username.  
+- **smtp_password**: Optional, SMTP password.  
 
 
-## 导出会话
-Inkwell运行于kterm终端，Kterm滚动体验不是很好，如果碰到多轮的长对话，很难查看稍久之前的信息，而且kterm的显示缓冲区也有限，太长的会话就看不到更前面的内容了。
-使用导出功能将会话导出为电子书后，使用Kindle内置阅读器打开，阅读和跳转体验会更好，还可以查词或永久保存。
-可以导出单个或多个会话为一本电子书，示范命令格式如下，每个命令执行完成后，Kindle的书库界面会自动出现对应图书：
-```
-e0: 导出当前会话
-e1: 导出第一个历史会话
-e1-3: 导出第一到第三个历史会话
-e1,3-5: 导出第一个，第三个，第四个，第五个历史会话
-```
+# Usage   
+1. Click the KUAL menu item to enter. There is no need to enable Wi-Fi in advance; the script will automatically turn Wi-Fi on and off when exiting.   
+2. Clicking a menu item labeled with `Clippings` allows you to immediately select book highlights for AI interaction.    
+3. Supports sending multiple lines of text. Enter an empty line to trigger sending.   
+4. Enter `?` at any time to open the menu, and `q` to exit.   
 
 
-## 菜单界面的命令简介
-* `数字0`：回到当前会话
-* `数字1及以上`：切换到某个历史会话，然后继续聊天
-* `c`：进入`clippings`界面，选择某个读书摘要或笔记发送给AI并进行提问
-* `d开头`：删除某个或某些历史会话，`d0`, `d1`, `d1-3`, `d1,3-5`
-* `e开头`：导出某个或某些历史会话为电子书，`e0`, `e1`, `e1-3`, `e1,3-5`
-* `m`：选择其他model，默认为临时，下次启动恢复原先model，如果需要保存到配置文件，在数字后添加一个叹号
-* `n`：新建一个会话
-* `p`：选择其他prompt，可以参考下面的“自定义prompt”章节
-* `q`：退出程序
-* `?`：显示命令帮助
+# Additional Features  
 
+## AI-Assisted Q&A with Reading Highlights  
+You can send selected reading highlights to the AI for further exploration, gaining deeper insights or understanding.   
+### Access options:  
+1. Use the `--clippings` startup argument.  
+2. Enter `c` in the main interface.  
+3. Enter `c` in the menu.  
 
-## 自定义prompt
-Inkwell支持方便切换prompt
-1. 可以在配置时输入 `Custom prompt`
-2. 可以手动编辑配置文件，在 `custom_prompt` 区段填写，然后将 `prompt` 修改为 `custom`
-3. 在`inkwell.py`同目录下创建文件 `prompts.txt`，可以写入多个prompt，然后在程序内切换，格式为
-```
-prompt name
-content line1
-content line2
-...
-</>
-prompt name
-content line1
-content line2
-...
-</>
-...
-```
+## Exporting Conversations  
+As **kterm** has limited scrollback and poor long-dialogue handling, Inkwell can export conversations as eBooks for better navigation and readability. Exported eBooks automatically appear in the Kindle library and can be emailed if SMTP settings are configured.  
 
+Example commands:  
+```  
+e0: Export current conversation.  
+e1: Export the first history conversation.  
+e1-3: Export conversations 1 to 3.  
+e1,3-5: Export conversations 1, 3, 4, and 5.  
+```  
 
-# 其他信息
-AI聊天对键盘要求比较高，如果对默认键盘布局不满意，可以使用作者的 [kterm键盘设计器](https://github.com/cdhigh/kterm_kb_layouter) 来制作自定义的布局。
+## Menu Command Overview  
+- **`0`**: Return to the current conversation.  
+- **`1` or higher**: Switch to a specific history conversation and continue chatting.  
+- **`c`**: Open **clippings** for AI-assisted Q&A.  
+- **`d`**: Delete one or multiple history conversations (e.g., `d0`, `d1-3`).  
+- **`e`**: Export one or multiple history conversations (e.g., `e0`, `e1-3`).  
+- **`m`**: Temporarily switch models (add `!` to save to configuration).  
+- **`n`**: Start a new conversation.  
+- **`p`**: Switch prompts (refer to custom prompt section).  
+- **`q`**: Exit.  
+- **`?`**: Show command help.  
 
+## Custom Prompts  
+Inkwell supports easy switching between prompts:  
+1. Enter a custom prompt during configuration.  
+2. Edit `custom_prompt` in the configuration file and set `prompt` to `custom`.  
+3. Add prompts to `prompts.txt` in the Inkwell directory. Example format:  
+   ```  
+   prompt_name  
+   content line1  
+   content line2  
+   ...  
+   </>  
+   another_prompt_name  
+   content line1  
+   ...  
+   </>  
+   ```  
+
+# Additional Information  
+1. Inkwell runs on **kterm**. Basic kterm operations include two-finger taps for the menu, font scaling, keyboard toggling, and screen rotation.  
+2. For custom keyboard layouts, use the [kterm keyboard designer](https://github.com/cdhigh/kterm_kb_layouter).  
