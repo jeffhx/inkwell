@@ -28,12 +28,12 @@ __English__ · [简体中文](readme_zh.md)
 
 # Installation  
 1. Ensure your Kindle is jailbroken and has **KUAL** and [Python3](https://www.mobileread.com/forums/showthread.php?t=225030) installed.  
-2. Extract `inkwell.zip` to the Kindle’s root directory (`/mnt/us`).  
+2. Extract [inkwell.zip](https://github.com/cdhigh/inkwell/releases) to the Kindle root directory (`/mnt/us`).  
 
 # Configuration  
 There are two ways to configure Inkwell:  
 1. Open the `config.json` file in the Inkwell directory on your computer, edit the fields, and copy it back to your Kindle.  
-2. Select `Inkwell Setup` from the **KUAL menu** and follow the wizard. Simply press Enter for any unclear steps.  
+2. Select `Inkwell Setup` from the **KUAL menu** and follow the wizard. Simply press Enter for any unclear steps. You don't need to install Kterm; it's already included in this package.     
 
 ### Configuration Options  
 - **provider**: AI provider. Supported values: `openai/google/xai/anthropic/mistral/groq/perplexity/alibaba`.  

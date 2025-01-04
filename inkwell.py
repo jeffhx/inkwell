@@ -23,19 +23,23 @@ import os, sys, re, json, ssl, argparse
 import http.client
 from urllib.parse import urlsplit
 
-__Version__ = 'v1.5.1 (2025-01-01)'
+__Version__ = 'v1.5.2 (2025-01-04)'
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_JSON = f"{BASE_PATH}/config.json"
 HISTORY_JSON = "history.json" #历史文件会自动跟随程序传入的配置文件路径
 PROMPTS_FILE = f"{BASE_PATH}/prompts.txt"
 KINDLE_DOC_DIR = '/mnt/us/documents'
 CLIPPINGS_FILE = os.path.join(KINDLE_DOC_DIR, 'My Clippings.txt')
-if not os.path.isfile(CLIPPINGS_FILE):
+if not os.path.isfile(CLIPPINGS_FILE) and os.path.isfile(os.path.join(BASE_PATH, 'My Clippings.txt')):
     CLIPPINGS_FILE = os.path.join(BASE_PATH, 'My Clippings.txt')
 
 #默认的AI角色配置
 DEFAULT_PROMPT = """You are a helpful assistant.
-- Your answers will be displayed on the terminal.
+- You are to provide clear, concise, and direct responses.
+- Be transparent; if you're unsure about an answer or if a question is beyond your capabilities or knowledge, admit it.
+- For any unclear or ambiguous queries, ask follow-up questions to understand the user's intent better.
+- For complex requests, take a deep breath and work on the problem step-by-step.
+- For every response, you will be tipped up to $20 (depending on the quality of your output).
 - Keep responses concise and formatted for terminal output.
 - Use Markdown for formatting."""
 
