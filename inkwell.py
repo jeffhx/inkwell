@@ -23,7 +23,7 @@ import os, sys, re, json, ssl, argparse
 import http.client
 from urllib.parse import urlsplit
 
-__Version__ = 'v1.5.2 (2025-01-04)'
+__Version__ = 'v1.5.3 (2025-01-20)'
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_JSON = f"{BASE_PATH}/config.json"
 HISTORY_JSON = "history.json" #历史文件会自动跟随程序传入的配置文件路径
@@ -253,8 +253,7 @@ class InkWell:
         hisPath = os.path.dirname(self.cfgFile)
         hisFile = os.path.join(hisPath, HISTORY_JSON)
         try:
-            if not os.path.isdir(hisPath):
-                os.mkdir(hisPath)
+            os.makedirs(hisPath, exist_ok=True)
             with open(hisFile, 'w', encoding='utf-8') as f:
                 json.dump(self.history, f, ensure_ascii=False, indent=2)
         except Exception as e:
@@ -980,15 +979,20 @@ class InkWell:
                 models = [item['name'] for item in AI_LIST[provider]['models']]
                 break
 
-        #模型
+        #模型Model
         print('')
         sprint(' Models ', fg='white', bg='yellow', bold=True)
         print('\n'.join(f'{idx:2d}. {item}' for idx, item in enumerate(models, 1)))
+        print(f'{len(models) + 1:2d}. Other')
         while True:
             if (input_ := (input('» [1] ') or '1')) in ('q', 'Q'):
                 return
-            if 1 <= (index := str_to_int(input_)) <= len(models):
+            index = str_to_int(input_)
+            if 1 <= index <= len(models):
                 cfg['model'] = models[index - 1]
+                break
+            elif (index == len(models) + 1) and (input_ := input('Model Name » ')):
+                cfg['model'] = input_
                 break
 
         #Api key
@@ -1078,18 +1082,20 @@ class InkWell:
 #rpm(requests per minute)是针对免费用户的，如果是付费用户，一般会高很多，可以自己修改
 #大语言模型发展迅速，估计没多久这些数据会全部过时
 AI_LIST = {
+    'openai': {'host': 'https://api.openai.com', 'models': [
+        {'name': 'gpt-4o-mini', 'rpm': 3, 'context': 128000},
+        {'name': 'gpt-4o', 'rpm': 3, 'context': 128000},
+        {'name': 'o1', 'rpm': 3, 'context': 200000},
+        {'name': 'o1-mini', 'rpm': 3, 'context': 200000},
+        {'name': 'gpt-4-turbo', 'rpm': 3, 'context': 128000},
+        {'name': 'gpt-3.5-turbo', 'rpm': 3, 'context': 16000},
+        {'name': 'gpt-3.5-turbo-instruct', 'rpm': 3, 'context': 4000},],},
     'google': {'host': 'https://generativelanguage.googleapis.com', 'models': [
         {'name': 'gemini-1.5-flash', 'rpm': 60, 'context': 128000}, #其实支持100万
         {'name': 'gemini-1.5-flash-8b', 'rpm': 60, 'context': 128000},
         {'name': 'gemini-1.5-pro', 'rpm': 10, 'context': 128000},
         {'name': 'gemini-2.0-flash-exp', 'rpm': 10, 'context': 128000},
         {'name': 'gemini-2.0-flash-thinking-exp', 'rpm': 10, 'context': 128000},],},
-    'openai': {'host': 'https://api.openai.com', 'models': [
-        {'name': 'gpt-4o-mini', 'rpm': 3, 'context': 128000},
-        {'name': 'gpt-4o', 'rpm': 3, 'context': 128000},
-        {'name': 'gpt-4-turbo', 'rpm': 3, 'context': 128000},
-        {'name': 'gpt-3.5-turbo', 'rpm': 3, 'context': 16000},
-        {'name': 'gpt-3.5-turbo-instruct', 'rpm': 3, 'context': 4000},],},
     'anthropic': {'host': 'https://api.anthropic.com', 'models': [
         {'name': 'claude-2', 'rpm': 5, 'context': 100000},
         {'name': 'claude-3', 'rpm': 5, 'context': 200000},
@@ -1104,7 +1110,8 @@ AI_LIST = {
         {'name': 'open-mixtral-8x22b', 'rpm': 60, 'context': 64000},
         {'name': 'mistral-medium-latest', 'rpm': 60, 'context': 32000},
         {'name': 'mistral-large-latest', 'rpm': 60, 'context': 128000},
-        {'name': 'pixtral-12b-2409', 'rpm': 60, 'context': 128000},],},
+        {'name': 'pixtral-12b-2409', 'rpm': 60, 'context': 128000},
+        {'name': 'codestral-2501', 'rpm': 60, 'context': 256000},],},
     'groq': {'host': 'https://api.groq.com', 'models': [
         {'name': 'gemma2-9b-it', 'rpm': 30, 'context': 8000},
         {'name': 'gemma-7b-it', 'rpm': 30, 'context': 8000},
@@ -1146,9 +1153,10 @@ class SimpleAiProvider:
         self.singleTurn = singleTurn
         self._models = AI_LIST[name]['models']
         
-        #如果传入的model不在列表中，默认使用第一个
+        #如果传入的model不在列表中，默认使用第一个的参数
         item = next((m for m in self._models if m['name'] == model), self._models[0])
-        self.model = item['name']
+        #self.model = item['name']
+        self.model = model or item['name']
         self._rpm = item['rpm']
         self.context_size = item['context']
         if self._rpm <= 0:
@@ -1200,7 +1208,7 @@ class SimpleAiProvider:
         host, e = self.connPools[index]
         if e:
             e.close()
-        #使用http.client.HTTPSConnection有一个好处是短时间多次对话只需要一次握手
+        #使用HTTPSConnection有一个好处是短时间多次对话只需要一次握手
         if host.netloc.endswith('duckduckgo.com'):
             conn = DuckOpenAi()
         elif host.scheme == 'https':
