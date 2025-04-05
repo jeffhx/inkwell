@@ -23,7 +23,7 @@ import os, sys, re, json, ssl, argparse
 import http.client
 from urllib.parse import urlsplit
 
-__Version__ = 'v1.5.3 (2025-01-20)'
+__Version__ = 'v1.5.4 (2025-04-03)'
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_JSON = f"{BASE_PATH}/config.json"
 HISTORY_JSON = "history.json" #历史文件会自动跟随程序传入的配置文件路径
@@ -72,7 +72,7 @@ DEFAULT_TOPIC = 'new conversation'
 DEFAULT_CFG = {"provider": "", "model": "", "api_key": "", "api_host": "", 
     "display_style": "markdown", "chat_type": "multi_turn", "token_limit": 4000, "max_history": 10, 
     "prompt": "default", "custom_prompt": "", "smtp_sender": "", "smtp_host": "", "smtp_username": "",
-    "smtp_password": ""}
+    "smtp_password": "", "renew_api_key": ""}
 
 #AI响应的结构封装
 class AiResponse:
@@ -740,6 +740,8 @@ class InkWell:
         else:
             print(resp.error)
             sprint('Press r to resend the last chat', bold=True)
+            if ' Unauthorized ' in resp.error or ' Forbidden ' in resp.error and self.config.get('renew_api_key'):
+                sprint('Press k to renew the api key', bold=True)
 
     #简单的处理markdown格式，用于在终端显示粗体斜体等效果
     def markdownToTerm(self, content):
@@ -872,6 +874,38 @@ class InkWell:
             newMsgs.append({'role': role, 'content': content})
         return messages[:1] + newMsgs[::-1]
 
+    #更新ApiKey
+    def renewApiKey(self):
+        url = self.config.get('renew_api_key', '')
+        if not url.startswith('http'):
+            print('Make sure the "renew_api_key" field is set in the config file before proceeding')
+            return
+
+        parts = urlsplit(url)
+        kC = http.client.HTTPSConnection if parts.scheme == 'https' else http.client.HTTPConnection
+        conn = kC(parts.netloc, timeout=60)
+
+        url = f"{parts.path}?{parts.query}" if parts.query else parts.path
+        conn.request('GET', url)
+        resp = conn.getresponse()
+        try:
+            body = json.loads(resp.read().decode("utf-8"))
+            newKey = body.get('data')
+        except:
+            body = newKey = None
+        if not (200 <= resp.status < 300) or not body:
+            print(f'Failed to renew api key: {resp.status}: {resp.reason}: {body}')
+        elif newKey == self.config.get('api_key'):
+            print('Your api key is up to date')
+        elif newKey:
+            self.config['api_key'] = newKey
+            self.saveConfig(self.config)
+            print('Api key has been renewed successfully, please restart the app to apply it')
+        else:
+            print('Unable to renew api key: empty result received')
+
+        conn.close()
+
     #主循环入口
     #clippings: 为True则直接进入选择摘要模式，否则默认新建一个对话
     def start(self, clippings=False):
@@ -919,6 +953,8 @@ class InkWell:
                 if input_ in ('q', 'Q'):
                     quitRequested = True
                     break
+                elif input_ in ('k', 'K') and cfg.get('renew_api_key'): #更新api_key
+                    self.renewApiKey()
                 elif input_ == 'c': #进入选择读书摘要界面
                     if self.summarizeClippings() == 'quit':
                         self.replayConversation() #中断了分享读书摘要，回到原先的对话
