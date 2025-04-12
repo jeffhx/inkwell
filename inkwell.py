@@ -1245,9 +1245,7 @@ class SimpleAiProvider:
         if e:
             e.close()
         #使用HTTPSConnection有一个好处是短时间多次对话只需要一次握手
-        if host.netloc.endswith('duckduckgo.com'):
-            conn = DuckOpenAi()
-        elif host.scheme == 'https':
+        if host.scheme == 'https':
             sslCtx = ssl._create_unverified_context()
             conn = http.client.HTTPSConnection(host.netloc, timeout=60, context=sslCtx)
         else:
@@ -1428,111 +1426,6 @@ class SimpleAiProvider:
     #通义千问
     def _alibaba_chat(self, message):
         return self._openai_chat(message, path='compatible-mode/v1/chat/completions')
-
-#duckduckgo转openai格式的封装器，外部接口兼容http.HTTPConnection
-class DuckOpenAi:
-    HEADERS = {
-        "User-Agent": "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:91.0) Gecko/20100101 Firefox/91.0",
-        "Accept": "text/event-stream",
-        "Accept-Language": "de,en-US;q=0.7,en;q=0.3",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Referer": "https://duckduckgo.com/",
-        "Content-Type": "application/json",
-        "Origin": "https://duckduckgo.com",
-        "Connection": "keep-alive",
-        "Cookie": "dcm=1",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-origin",
-        "Pragma": "no-cache",
-        "TE": "trailers",
-    }
-    HOST = "duckduckgo.com"
-    STATUS_URL = "/duckchat/v1/status"
-    CHAT_URL = "/duckchat/v1/chat"
-
-    #模拟HTTPConnection实例 getresponse() 返回的的结果
-    class DuckResponse:
-        def __init__(self, status, headers, data, reason=''):
-            self.status = status
-            self.headers = headers
-            self.data = data
-            self.reason = reason
-        def read(self):
-            return self.data
-
-    def __init__(self):
-        self.conn = None
-        self._payload = {}
-        self.createConnection()
-
-    def close(self):
-        if self.conn:
-            self.conn.close()
-            self.conn = None
-
-    def createConnection(self):
-        self.close()
-        sslCtx = ssl._create_unverified_context()
-        self.conn = http.client.HTTPSConnection('duckduckgo.com', timeout=60, context=sslCtx)
-        return self.conn
-
-    #使用底层接口实际发送网络请求
-    #返回元祖 (status, headers, body)
-    def _send(self, url, headers=None, payload=None, method='GET'):
-        retried = 0
-        _headers = self.HEADERS
-        _headers.update(headers or {})
-        while retried < 2:
-            try:
-                self.conn.request(method, url, payload, _headers)
-                resp = self.conn.getresponse()
-                return resp.status, resp.headers, resp.read()
-            except (http.client.CannotSendRequest, http.client.RemoteDisconnected) as e:
-                if retried:
-                    raise
-                #print("Connection issue, retrying:", e)
-                self.createConnection()
-                retried += 1
-        return 500, {}, b''
-
-    #只是暂存结果，在 getresponse() 才实际发起请求
-    def request(self, method, url, payload=None, headers=None):
-        self._payload = json.loads(payload or '{}')
-
-    #发起请求，返回 DuckResponse 实例
-    def getresponse(self):
-        status, heads, body = self._send(self.STATUS_URL, headers={"x-vqd-accept": "1"})
-        if status != 200:
-            return self.DuckResponse(status, heads, body)
-            
-        vqd4 = heads.get("x-vqd-4", '')
-        payload = {"model": "gpt-4o-mini", "messages": self._payload.get('messages', [])}
-
-        status, heads, body = self._send(self.CHAT_URL, headers={"x-vqd-4": vqd4}, 
-            payload=json.dumps(payload), method='POST')
-        if status != 200:
-            return self.DuckResponse(status, heads, body)
-
-        content = id_ = model = ""
-        created = 0
-        for line in body.decode('utf-8').splitlines():
-            if line.startswith("data: "):
-                chunk = line[6:]
-                if chunk == "[DONE]":
-                    break
-                try:
-                    data = json.loads(chunk)
-                    id_ = data.get("id", id_)
-                    created = data.get("created", created)
-                    model = data.get("model", model)
-                    content += data.get("message", "")
-                except json.JSONDecodeError:
-                    continue
-        body = {"id": id_, "object": "chat.completion", "created": created, "model": model,
-            "choices": [{ "index": 0, "finish_reason": "stop",
-                "message": {"role": "assistant", "content": content},},],}
-        return self.DuckResponse(status, heads, json.dumps(body).encode('utf-8'))
 
 #获取发生异常时的文件名和行号，添加到自定义错误信息后面
 #此函数必须要在异常后调用才有意义，否则只是简单的返回传入的参数
