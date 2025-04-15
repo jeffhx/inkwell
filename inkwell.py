@@ -23,7 +23,7 @@ import os, sys, re, json, ssl, argparse
 import http.client
 from urllib.parse import urlsplit
 
-__Version__ = 'v1.5.4 (2025-04-03)'
+__Version__ = 'v1.5.5 (2025-04-15)'
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_JSON = f"{BASE_PATH}/config.json"
 HISTORY_JSON = "history.json" #历史文件会自动跟随程序传入的配置文件路径
@@ -891,16 +891,18 @@ class InkWell:
         try:
             body = json.loads(resp.read().decode("utf-8"))
             newKey = body.get('data')
+            modified = body.get('modified', '')
         except:
-            body = newKey = None
+            body = newKey = modified = None
         if not (200 <= resp.status < 300) or not body:
             print(f'Failed to renew api key: {resp.status}: {resp.reason}: {body}')
         elif newKey == self.config.get('api_key'):
-            print('Your api key is up to date')
+            print(f'Your api key is up to date: {modified}')
         elif newKey:
+            self.client.apiKey = newKey
             self.config['api_key'] = newKey
             self.saveConfig(self.config)
-            print('Api key has been renewed successfully, please restart the app to apply it')
+            print(f'Api key has been renewed successfully: {modified}')
         else:
             print('Unable to renew api key: empty result received')
 
@@ -1127,11 +1129,13 @@ AI_LIST = {
         {'name': 'gpt-3.5-turbo', 'rpm': 3, 'context': 16000},
         {'name': 'gpt-3.5-turbo-instruct', 'rpm': 3, 'context': 4000},],},
     'google': {'host': 'https://generativelanguage.googleapis.com', 'models': [
-        {'name': 'gemini-1.5-flash', 'rpm': 60, 'context': 128000}, #其实支持100万
-        {'name': 'gemini-1.5-flash-8b', 'rpm': 60, 'context': 128000},
-        {'name': 'gemini-1.5-pro', 'rpm': 10, 'context': 128000},
-        {'name': 'gemini-2.0-flash-exp', 'rpm': 10, 'context': 128000},
-        {'name': 'gemini-2.0-flash-thinking-exp', 'rpm': 10, 'context': 128000},],},
+        {'name': 'gemini-1.5-flash', 'rpm': 15, 'context': 128000}, #其实支持100万
+        {'name': 'gemini-1.5-flash-8b', 'rpm': 15, 'context': 128000},
+        {'name': 'gemini-1.5-pro', 'rpm': 2, 'context': 128000},
+        {'name': 'gemini-2.0-flash', 'rpm': 15, 'context': 128000},
+        {'name': 'gemini-2.0-flash-lite', 'rpm': 30, 'context': 128000},
+        {'name': 'gemini-2.0-flash-thinking', 'rpm': 10, 'context': 128000},
+        {'name': 'gemini-2.0-pro', 'rpm': 5, 'context': 128000},],},
     'anthropic': {'host': 'https://api.anthropic.com', 'models': [
         {'name': 'claude-2', 'rpm': 5, 'context': 100000},
         {'name': 'claude-3', 'rpm': 5, 'context': 200000},
@@ -1218,6 +1222,10 @@ class SimpleAiProvider:
         ret = self.apiKeys[self.apiKeyIdx]
         self.apiKeyIdx = (self.apiKeyIdx + 1) % len(self.apiKeys)
         return ret
+    @apiKey.setter
+    def apiKey(self, value):
+        self.apiKeys = value.split(';')
+        self.apiKeyIdx = 0
     
     #自动获取列表中下一个连接对象，返回 (index, host tuple, con obj)
     def nextConnection(self):
