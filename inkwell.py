@@ -1121,13 +1121,18 @@ class InkWell:
 #大语言模型发展迅速，估计没多久这些数据会全部过时
 AI_LIST = {
     'openai': {'host': 'https://api.openai.com', 'models': [
-        {'name': 'gpt-4o-mini', 'rpm': 3, 'context': 128000},
-        {'name': 'gpt-4o', 'rpm': 3, 'context': 128000},
-        {'name': 'o1', 'rpm': 3, 'context': 200000},
-        {'name': 'o1-mini', 'rpm': 3, 'context': 200000},
-        {'name': 'gpt-4-turbo', 'rpm': 3, 'context': 128000},
-        {'name': 'gpt-3.5-turbo', 'rpm': 3, 'context': 16000},
-        {'name': 'gpt-3.5-turbo-instruct', 'rpm': 3, 'context': 4000},],},
+        {'name': 'gpt-4o-mini', 'rpm': 1000, 'context': 128000},
+        {'name': 'gpt-4o', 'rpm': 500, 'context': 128000},
+        {'name': 'o1', 'rpm': 500, 'context': 200000},
+        {'name': 'o1-mini', 'rpm': 500, 'context': 200000},
+        {'name': 'o1-pro', 'rpm': 500, 'context': 200000},
+        {'name': 'gpt-4.1', 'rpm': 500, 'context': 1000000},
+        {'name': 'o3', 'rpm': 500, 'context': 200000},
+        {'name': 'o3-mini', 'rpm': 1000, 'context': 200000},
+        {'name': 'o4-mini', 'rpm': 1000, 'context': 200000},
+        {'name': 'gpt-4-turbo', 'rpm': 500, 'context': 128000},
+        {'name': 'gpt-3.5-turbo', 'rpm': 3500, 'context': 16000},
+        {'name': 'gpt-3.5-turbo-instruct', 'rpm': 500, 'context': 4000},],},
     'google': {'host': 'https://generativelanguage.googleapis.com', 'models': [
         {'name': 'gemini-1.5-flash', 'rpm': 15, 'context': 128000}, #其实支持100万
         {'name': 'gemini-1.5-flash-8b', 'rpm': 15, 'context': 128000},
