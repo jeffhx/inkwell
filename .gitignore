@@ -6,6 +6,8 @@ __pycache__/
 *.html
 *.txt
 /tests
+*.exe
+inkwell
 
 # C extensions
 *.so

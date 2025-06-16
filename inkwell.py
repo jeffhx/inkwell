@@ -23,7 +23,7 @@ import os, sys, re, json, ssl, argparse
 import http.client
 from urllib.parse import urlsplit
 
-__Version__ = 'v1.5.5 (2025-04-15)'
+__Version__ = 'v1.5.6 (2025-06-15)'
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_JSON = f"{BASE_PATH}/config.json"
 HISTORY_JSON = "history.json" #历史文件会自动跟随程序传入的配置文件路径
@@ -234,7 +234,7 @@ class InkWell:
     #将当前会话添加到历史对话列表
     def addCurrentConvToHistory(self):
         maxHisotry = self.config.get('max_history', 10)
-        if maxHisotry <= 0 or not self.currTopic:
+        if maxHisotry <= 0 or not self.currTopic or self.currTopic == DEFAULT_TOPIC:
             return
 
         if self.history and self.history[-1]['topic'] == self.currTopic:
@@ -519,8 +519,7 @@ class InkWell:
 
     #开始一个新的会话
     def startNewConversation(self):
-        if self.currTopic != DEFAULT_TOPIC: #先保存当前对话
-            self.addCurrentConvToHistory()
+        self.addCurrentConvToHistory()
         self.messages = self.messages[:1] #第一个元素是系统Prompt，要一直保留
         self.currTopic = DEFAULT_TOPIC
         self.currPrompt = self.config.get('prompt', 'default')
@@ -534,8 +533,7 @@ class InkWell:
     #切换到其他会话
     #msg: 目的消息字典
     def switchConversation(self, msg):
-        if self.currTopic != DEFAULT_TOPIC: #先保存当前对话
-            self.addCurrentConvToHistory()
+        self.addCurrentConvToHistory()
         self.messages = self.messages[:1] + msg.get('messages', [])
         self.currTopic = msg.get('topic', DEFAULT_TOPIC)
         self.currPrompt = msg.get('prompt', 'default')
@@ -655,7 +653,7 @@ class InkWell:
             lines = item.strip().split('\n', 2)
             if len(lines) < 3:
                 continue
-            ret.append((lines[0], lines[-1].strip())) #书名，笔记
+            ret.append((lines[0], lines[-1].strip())) #书名，笔记内容
         return ret
 
     #分享一个高亮读书片段给AI，让AI总结和答疑
@@ -709,10 +707,10 @@ class InkWell:
         print('{}: Delete one or a range of conversations'.format(style('dnum', bold=True)))
         print('{}: Export one or a range of conversations'.format(style('enum', bold=True)))
         print('{}: Switch to another model'.format(style('   m', bold=True)))
-        print('{}: Start a new conversation'.format('   n', bold=True))
-        print('{}: Choose another prompt'.format('   p', bold=True))
-        print('{}: Quit the program'.format('   q', bold=True))
-        print('{}: Show the command list'.format('   ?', bold=True))
+        print('{}: Start a new conversation'.format(style('   n', bold=True)))
+        print('{}: Choose another prompt'.format(style('   p', bold=True)))
+        print('{}: Quit the program'.format(style('   q', bold=True)))
+        print('{}: Show the command list'.format(style('   ?', bold=True)))
 
     #重新输出对话信息，用于切换对话历史
     def replayConversation(self):
@@ -732,7 +730,18 @@ class InkWell:
 
     #打印AI返回的内容
     def printAiResponse(self, resp):
-        self.printChatBubble('assistant', resp.host)
+        host = resp.host
+        if host.startswith('http://'):
+            host = host[7:]
+        elif host.startswith('https://'):
+            host = host[8:]
+        while len(host) > 30: # 循环去掉最后一个点号后的部分，直到小于等于30
+            pos = host.rfind('.')
+            if pos <= 0:
+                break
+            host = host[:pos]
+
+        self.printChatBubble('assistant', host)
         if resp.success:
             disStyle = self.config.get('display_style', 'markdown')
             content = resp.content if disStyle == 'plaintext' else self.markdownToTerm(resp.content)
@@ -851,9 +860,9 @@ class InkWell:
         try:
             respTxt = self.client.chat(self.getTrimmedChat(messages))
         except:
-            return AiResponse(success=False, error=loc_exc_pos('Error'), host=self.client.host)
+            return AiResponse(success=False, error=loc_exc_pos('Error'), host=self.client.tag)
         else:
-            return AiResponse(success=True, content=respTxt, host=self.client.host)
+            return AiResponse(success=True, content=respTxt, host=self.client.tag)
 
     #从消息历史中截取符合token长度要求的最近一部分会话，用于发送给AI服务器
     #返回一个新的列表
@@ -995,9 +1004,7 @@ class InkWell:
                         self.printChatBubble('user', self.currTopic)
 
         self.client.close()
-        #保存当前记录
-        if self.currTopic != DEFAULT_TOPIC:
-            self.addCurrentConvToHistory()
+        self.addCurrentConvToHistory()
 
     #交互式配置过程
     def setup(self):
@@ -1146,7 +1153,7 @@ AI_LIST = {
         {'name': 'claude-3', 'rpm': 5, 'context': 200000},
         {'name': 'claude-2.1', 'rpm': 5, 'context': 100000},],},
     'xai': {'host': 'https://api.x.ai', 'models': [
-        {'name': 'grok-beta', 'rpm': 60, 'context': 128000},
+        {'name': 'grok-1', 'rpm': 60, 'context': 128000},
         {'name': 'grok-2', 'rpm': 60, 'context': 128000},],},
     'mistral': {'host': 'https://api.mistral.ai', 'models': [
         {'name': 'open-mistral-7b', 'rpm': 60, 'context': 32000},
@@ -1220,6 +1227,10 @@ class SimpleAiProvider:
     @property
     def rpm(self):
         return int(self._rpm * max([len(self.connPools), len(self.apiKeys)]))
+    #用于界面显示的host，如果是多个的话，显示当前使用的host，否则返回空
+    @property
+    def tag(self):
+        return self.host if len(self.connPools) > 1 else ""
 
     #自动获取下一个ApiKey
     @property
@@ -1312,8 +1323,8 @@ class SimpleAiProvider:
     #外部调用此函数即可调用简单聊天功能
     #message: 如果是文本，则使用各项默认参数
     #传入 list/dict 可以定制 role 等参数
-    #返回 (respTxt, host)
-    def chat(self, message) -> (str, str):
+    #返回 respTxt
+    def chat(self, message):
         if not self.apiKey:
             raise ValueError(f'The api key is empty')
         name = self.name
@@ -1420,7 +1431,7 @@ class SimpleAiProvider:
         _trim = lambda x: x[7:] if x.startswith('models/') else x
         return [_trim(item['name']) for item in data['models']]
 
-    #grok的chat接口
+    #xai的chat接口
     def _xai_chat(self, message):
         return self._openai_chat(message, path='v1/chat/completions')
 
