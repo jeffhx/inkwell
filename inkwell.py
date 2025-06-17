@@ -23,7 +23,7 @@ import os, sys, re, json, ssl, argparse
 import http.client
 from urllib.parse import urlsplit
 
-__Version__ = 'v1.5.6 (2025-06-15)'
+__Version__ = 'v1.6 (2025-06-17)'
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_JSON = f"{BASE_PATH}/config.json"
 HISTORY_JSON = "history.json" #历史文件会自动跟随程序传入的配置文件路径
@@ -749,7 +749,8 @@ class InkWell:
         else:
             print(resp.error)
             sprint('Press r to resend the last chat', bold=True)
-            if ' Unauthorized ' in resp.error or ' Forbidden ' in resp.error and self.config.get('renew_api_key'):
+            if (any(s in resp.error for s in ('Unauthorized', 'Forbidden', 'token_expired'))
+                and self.config.get('renew_api_key')):
                 sprint('Press k to renew the api key', bold=True)
 
     #简单的处理markdown格式，用于在终端显示粗体斜体等效果
@@ -1138,8 +1139,7 @@ AI_LIST = {
         {'name': 'o3-mini', 'rpm': 1000, 'context': 200000},
         {'name': 'o4-mini', 'rpm': 1000, 'context': 200000},
         {'name': 'gpt-4-turbo', 'rpm': 500, 'context': 128000},
-        {'name': 'gpt-3.5-turbo', 'rpm': 3500, 'context': 16000},
-        {'name': 'gpt-3.5-turbo-instruct', 'rpm': 500, 'context': 4000},],},
+        {'name': 'gpt-3.5-turbo', 'rpm': 3500, 'context': 16000},],},
     'google': {'host': 'https://generativelanguage.googleapis.com', 'models': [
         {'name': 'gemini-1.5-flash', 'rpm': 15, 'context': 128000}, #其实支持100万
         {'name': 'gemini-1.5-flash-8b', 'rpm': 15, 'context': 128000},

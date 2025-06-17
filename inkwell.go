@@ -11,29 +11,30 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+
 	//"os/user"
+	"crypto/tls"
+	"encoding/base64"
+	"flag"
+	"io"
+	"math/rand"
+	"net/smtp"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
-	"flag"
-	"net/smtp"
-	"crypto/tls"
-	"regexp"
-	"encoding/base64"
-	"math/rand"
-	"io"
 )
 
 // 所有常量定义
 const (
-	Version      = "v1.0.0-go (2025-06-15)"
-	ConfigFile   = "config.json"
-	HistoryFile  = "history.json"
-	PromptsFile  = "prompts.txt"
-	KindleDocDir = "/mnt/us/documents"
-	ClippingsTxt = "My Clippings.txt"
-	DefaultTopic = "New chat"
+	Version       = "v1.6-go (2025-06-17)"
+	ConfigFile    = "config.json"
+	HistoryFile   = "history.json"
+	PromptsFile   = "prompts.txt"
+	KindleDocDir  = "/mnt/us/documents"
+	ClippingsTxt  = "My Clippings.txt"
+	DefaultTopic  = "New chat"
 	DefaultPrompt = `You are a helpful assistant.
 - You are to provide clear, concise, and direct responses.
 - Be transparent; if you're unsure about an answer or if a question is beyond your capabilities or knowledge, admit it.
@@ -60,7 +61,7 @@ Clippings:
 {clips}
 {question}`
 
-	DefaultConfigFile = "config.json"  // 默认配置文件名
+	DefaultConfigFile = "config.json" // 默认配置文件名
 
 	// 默认配置模板
 	DefaultConfig = `{
@@ -82,28 +83,26 @@ Clippings:
 }`
 )
 
-
-
 // 终端颜色代码表
 var terminalColors = map[string]int{
-	"black":   30,
-	"red":     31,
-	"green":   32,
-	"yellow":  33,
-	"blue":    34,
-	"magenta": 35,
-	"cyan":    36,
-	"white":   37,
-	"reset":   39,
+	"black":          30,
+	"red":            31,
+	"green":          32,
+	"yellow":         33,
+	"blue":           34,
+	"magenta":        35,
+	"cyan":           36,
+	"white":          37,
+	"reset":          39,
 	"bright_black":   90,
 	"bright_red":     91,
 	"bright_green":   92,
-    "bright_yellow":  93,
-    "bright_blue":    94,
-    "bright_magenta": 95,
-    "bright_cyan":    96,
-    "bright_white":   97,
-    "grey":    90,
+	"bright_yellow":  93,
+	"bright_blue":    94,
+	"bright_magenta": 95,
+	"bright_cyan":    96,
+	"bright_white":   97,
+	"grey":           90,
 }
 
 // 类型定义，表示带终端格式化的字符串
@@ -149,22 +148,22 @@ type ChatItem struct {
 
 // 历史聊天会话的一个条目
 type HistoryItem struct {
-	Topic    string    `json:"topic"`
-	Prompt   string    `json:"prompt"`
+	Topic    string     `json:"topic"`
+	Prompt   string     `json:"prompt"`
 	Messages []ChatItem `json:"messages"`
 }
 
 // 主结构体
 // 管理配置、历史、对话、菜单、AI请求等
 type InkWell struct {
-	CfgFile     string
-	CurrTopic   string
-	PromptName  string
-	History     []HistoryItem
-	Messages    []ChatItem
-	Config      *AppConfig
-	Provider    *SimpleAiProvider
-	Prompts     map[string]string
+	CfgFile    string
+	CurrTopic  string
+	PromptName string
+	History    []HistoryItem
+	Messages   []ChatItem
+	Config     *AppConfig
+	Provider   *SimpleAiProvider
+	Prompts    map[string]string
 }
 
 // AI模型结构体
@@ -196,7 +195,6 @@ var AIList = map[string]AiProviderInfo{
 			{Name: "o4-mini", Rpm: 1000, Context: 200000},
 			{Name: "gpt-4-turbo", Rpm: 500, Context: 128000},
 			{Name: "gpt-3.5-turbo", Rpm: 3500, Context: 16000},
-			{Name: "gpt-3.5-turbo-instruct", Rpm: 500, Context: 4000},
 		},
 	},
 	"google": {
@@ -284,6 +282,7 @@ type SimpleAiProvider struct {
 }
 
 // 用来获取终端输入的对象，全局创建，节省资源
+// 不使用并发，所以不需要锁
 var stdinScanner = bufio.NewScanner(os.Stdin)
 
 // 以下是几个格式化字符串为终端显示的函数
@@ -326,6 +325,7 @@ func (s Styled) NoResetFg(color string) Styled {
 func (s Styled) NoResetBg(color string) Styled {
 	return Styled("\033[" + interpretColor(color, 10) + "m" + string(s))
 }
+
 // 打印带颜色的字符串
 func (s Styled) Println() {
 	fmt.Println(string(s))
@@ -361,7 +361,7 @@ func (iw *InkWell) LoadConfig() bool {
 		Styled("The file %s does not exist").Bold().Printf(iw.CfgFile)
 		Styled("Creating a default configuration file with this name...").Bold().Println()
 		os.WriteFile(iw.CfgFile, []byte(DefaultConfig), 0644)
-		fmt.Println("Edit the file manually or run with the -s option to complete the setup\n")
+		fmt.Println("Edit the file manually or run with the -s option to complete the setup")
 		return false
 	}
 
@@ -369,8 +369,12 @@ func (iw *InkWell) LoadConfig() bool {
 	if err != nil {
 		return false
 	}
-	json.Unmarshal(b, &cfg)
-	
+	err = json.Unmarshal(b, &cfg)
+	if err != nil {
+		Styled("Failed to parse config file: %s").Fg("red").Printf(err.Error())
+		return false
+	}
+
 	// 校验 provider/model 等
 	info, ok := AIList[cfg.Provider]
 	if !ok {
@@ -415,7 +419,8 @@ func (iw *InkWell) SaveConfig(cfg *AppConfig) {
 
 // 加载历史记录
 func (iw *InkWell) LoadHistory() {
-	if iw.Config.MaxHistory <= 0 { // 禁用了历史对话功能
+	iw.History = []HistoryItem{}
+	if iw.Config == nil || iw.Config.MaxHistory <= 0 { // 禁用了历史对话功能
 		return
 	}
 
@@ -423,8 +428,6 @@ func (iw *InkWell) LoadHistory() {
 	data, err := os.ReadFile(hisFile)
 	if err == nil {
 		json.Unmarshal(data, &iw.History)
-	} else {
-		iw.History = []HistoryItem{}
 	}
 }
 
@@ -500,7 +503,7 @@ func (iw *InkWell) ReadClippings() [][2]string {
 
 	clips := strings.Split(string(b), "==========")
 	if len(clips) > 10 {
-		clips = clips[len(clips) - 10:]
+		clips = clips[len(clips)-10:]
 	}
 	var ret [][2]string
 	for _, item := range clips { // 只显示最新摘要，最后一个为空(会被剔除)
@@ -523,7 +526,7 @@ func (iw *InkWell) Setup() {
 	fmt.Println("")
 	Styled(" Providers ").Fg("white").Bg("yellow").Bold().Println()
 	for i, p := range providers {
-		fmt.Printf("%2d. %s\n", i + 1, p)
+		fmt.Printf("%2d. %s\n", i+1, p)
 	}
 
 	// 选择provider
@@ -534,11 +537,11 @@ func (iw *InkWell) Setup() {
 		}
 		idx, err := strconv.Atoi(input)
 		if err == nil && idx >= 1 && idx <= len(providers) {
-			cfg.Provider = providers[idx - 1]
+			cfg.Provider = providers[idx-1]
 			break
 		}
 	}
-	
+
 	// 选择模型
 	models := []string{}
 	if info, ok := AIList[cfg.Provider]; ok {
@@ -549,9 +552,9 @@ func (iw *InkWell) Setup() {
 	fmt.Println("")
 	Styled(" Models ").Fg("white").Bg("yellow").Println()
 	for i, m := range models {
-		fmt.Printf("%2d. %s\n", i + 1, m)
+		fmt.Printf("%2d. %s\n", i+1, m)
 	}
-	fmt.Printf("%2d. Other\n", len(models) + 1)
+	fmt.Printf("%2d. Other\n", len(models)+1)
 	for {
 		input := Input("» [1] ")
 		if input == "q" || input == "Q" {
@@ -561,9 +564,9 @@ func (iw *InkWell) Setup() {
 		}
 		idx, err := strconv.Atoi(input)
 		if err == nil && idx >= 1 && idx <= len(models) {
-			cfg.Model = models[idx - 1]
+			cfg.Model = models[idx-1]
 			break
-		} else if idx == len(models) + 1 { // 输入不在列表中的模型名字
+		} else if idx == len(models)+1 { // 输入不在列表中的模型名字
 			custom := Input("Model Name » ")
 			if custom != "" {
 				cfg.Model = custom
@@ -571,7 +574,7 @@ func (iw *InkWell) Setup() {
 			}
 		}
 	}
-	
+
 	// API Key
 	fmt.Println("")
 	Styled(" Api key (semicolon-separated) ").Fg("white").Bg("yellow").Println()
@@ -608,7 +611,7 @@ func (iw *InkWell) Setup() {
 	Styled(" Display style ").Fg("white").Bg("yellow").Println()
 	styles := []string{"markdown", "markdown_table", "plaintext"}
 	for i, s := range styles {
-		fmt.Printf("%2d. %s\n", i + 1, s)
+		fmt.Printf("%2d. %s\n", i+1, s)
 	}
 	for {
 		input := Input("» [1] ")
@@ -619,7 +622,7 @@ func (iw *InkWell) Setup() {
 		}
 		idx, err := strconv.Atoi(input)
 		if err == nil && idx >= 1 && idx <= len(styles) {
-			cfg.DisplayStyle = styles[idx - 1]
+			cfg.DisplayStyle = styles[idx-1]
 			break
 		}
 	}
@@ -629,7 +632,7 @@ func (iw *InkWell) Setup() {
 	Styled(" Chat type ").Fg("white").Bg("yellow").Println()
 	turns := []string{"multi_turn (multi-step conversations)", "single_turn (merged history as context)"}
 	for i, t := range turns {
-		fmt.Printf("%2d. %s\n", i + 1, t)
+		fmt.Printf("%2d. %s\n", i+1, t)
 	}
 	for {
 		input := Input("» [1] ")
@@ -711,16 +714,16 @@ func (iw *InkWell) FetchAiResponse(messages []ChatItem) AiResponse {
 		fmt.Println("The provider is empty")
 		return AiResponse{Success: false, Error: "The provider is empty", Host: ""}
 	}
-	
+
 	return iw.Provider.Chat(messages)
 }
 
 // 打印聊天气泡
 func (iw *InkWell) PrintChatBubble(role, topic string) {
-    if topic != "" {
-    	topic = "(" + topic + ")"
-    }
-    bg := "cyan"
+	if topic != "" {
+		topic = "(" + topic + ")"
+	}
+	bg := "cyan"
 	if role == "user" {
 		bg = "green"
 		role = " YOU "
@@ -755,7 +758,9 @@ func (iw *InkWell) UpdateTopic(msg string) {
 			topic = replacer.Replace(resp.Content)
 		}
 	}
-	topic = strings.TrimSpace(topic[:min(len(topic), 40)])
+	if len(topic) > 40 {
+		topic = strings.TrimSpace(topic[:40])
+	}
 	if topic != "" {
 		iw.CurrTopic = topic
 	}
@@ -841,7 +846,7 @@ func (iw *InkWell) Start(clippings bool) {
 			// 输入r重发上一个请求
 			if (input == "r" || input == "R") && msgCnt == 0 && len(iw.Messages) > 2 {
 				// 开头为背景prompt，最后一个是assistant消息，-2 就是上次的用户消息
-				userItem := iw.Messages[len(iw.Messages) - 2]
+				userItem := iw.Messages[len(iw.Messages)-2]
 				input = ""
 				for _, line := range strings.Split(userItem.Content, "\n") {
 					fmt.Printf("» %s\n", line)
@@ -878,7 +883,8 @@ func (iw *InkWell) Start(clippings bool) {
 
 // 重新输出对话信息，用于切换对话历史
 func (iw *InkWell) ReplayConversation() {
-	for i, item := range iw.Messages[1:] {
+	messages := iw.Messages[1:]
+	for i, item := range messages {
 		content := item.Content
 		if item.Role == "user" {
 			iw.PrintChatBubble("user", iw.CurrTopic)
@@ -892,7 +898,7 @@ func (iw *InkWell) ReplayConversation() {
 			}
 			fmt.Println(strings.TrimSpace(content))
 		}
-		if i < len(iw.Messages[1:]) - 1 {
+		if i < len(iw.Messages[1:])-1 {
 			fmt.Println()
 		}
 	}
@@ -903,6 +909,9 @@ func (iw *InkWell) ReplayConversation() {
 func (iw *InkWell) GetPromptText() string {
 	name := iw.Config.Prompt
 	var prompt string
+	if iw.Prompts == nil {
+		iw.Prompts = make(map[string]string)
+	}
 	if name == "custom" {
 		prompt = iw.Config.CustomPrompt
 	} else if name != "default" {
@@ -936,6 +945,9 @@ func fileExists(filename string) bool {
 
 // 获取下一个ApiKey
 func (p *SimpleAiProvider) NextApiKey() string {
+	if len(p.ApiKeys) == 0 {
+		return ""
+	}
 	key := p.ApiKeys[p.ApiKeyIdx]
 	p.ApiKeyIdx = (p.ApiKeyIdx + 1) % len(p.ApiKeys)
 	return key
@@ -943,6 +955,9 @@ func (p *SimpleAiProvider) NextApiKey() string {
 
 // 获取下一个AI的host地址
 func (p *SimpleAiProvider) NextHost() string {
+	if len(p.Hosts) == 0 {
+		return ""
+	}
 	host := p.Hosts[p.HostIdx]
 	p.HostIdx = (p.HostIdx + 1) % len(p.Hosts)
 	return host
@@ -950,6 +965,12 @@ func (p *SimpleAiProvider) NextHost() string {
 
 // AI服务器的聊天接口
 func (p *SimpleAiProvider) Chat(messages []ChatItem) AiResponse {
+	if len(messages) == 0 {
+		return AiResponse{
+			Success: false,
+			Error:   "Empty messages",
+		}
+	}
 	switch p.Name {
 	case "openai":
 		return p.openaiChat(messages, "v1/chat/completions")
@@ -966,8 +987,10 @@ func (p *SimpleAiProvider) Chat(messages []ChatItem) AiResponse {
 	case "alibaba":
 		return p.openaiChat(messages, "compatible-mode/v1/chat/completions")
 	default:
-		errTxt := fmt.Sprintf("unsupported provider: %s", p.Name)
-		return AiResponse{Success: false, Content: "", Error: errTxt, Host: ""}
+		return AiResponse{
+			Success: false,
+			Error:   fmt.Sprintf("unsupported provider: %s", p.Name),
+		}
 	}
 }
 
@@ -978,17 +1001,23 @@ func (p *SimpleAiProvider) openaiChat(messages []ChatItem, path string) AiRespon
 		host = AIList["openai"].Host
 	}
 	apiKey := p.NextApiKey()
-	url, _ := url.JoinPath(host, path)
+	url, err := url.JoinPath(host, path)
+	if err != nil {
+		return AiResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Invalid URL: %v", err),
+		}
+	}
 	// 如果有超过一个host，则返回当前host，否则返回空
 	if len(p.Hosts) == 1 {
 		host = ""
 	}
-	
+
 	// 如果是单轮对话模式，将历史对话合并为单一消息
 	if p.SingleTurn && len(messages) > 1 {
 		msgArr := []string{"Previous conversations:\n"}
 		roleMap := map[string]string{"system": "background", "assistant": "Your response"}
-		for _, item := range messages[:len(messages) - 1] {
+		for _, item := range messages[:len(messages)-1] {
 			roleText := roleMap[item.Role]
 			if roleText == "" {
 				roleText = "I asked"
@@ -997,15 +1026,27 @@ func (p *SimpleAiProvider) openaiChat(messages []ChatItem, path string) AiRespon
 		}
 		msgArr = append(msgArr, "\nPlease continue this conversation based on the previous information:\n")
 		msgArr = append(msgArr, "I ask:")
-		msgArr = append(msgArr, messages[len(messages) - 1].Content)
+		msgArr = append(msgArr, messages[len(messages)-1].Content)
 		msgArr = append(msgArr, "You Response:\n")
 		messages = []ChatItem{{Role: "user", Content: strings.Join(msgArr, "\n")}}
 	}
 
 	payload := map[string]any{"model": p.Model, "messages": messages}
-	body, _ := json.Marshal(payload)
-	req, _ := http.NewRequest("POST", url, bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer " + apiKey)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return AiResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to marshal payload: %v", err),
+		}
+	}
+	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	if err != nil {
+		return AiResponse{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to create request: %v", err),
+		}
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := p.Client.Do(req)
 	if err != nil {
@@ -1044,13 +1085,13 @@ func (p *SimpleAiProvider) googleChat(messages []ChatItem) AiResponse {
 	if len(p.Hosts) == 1 {
 		host = ""
 	}
-	
+
 	// 转换消息格式为Google API格式
 	var contents []map[string]any
 	for _, item := range messages {
 		role := item.Role
 		content := item.Content
-		
+
 		// system role 转换为 user，Google API不支持system
 		if role == "system" {
 			role = "user"
@@ -1058,7 +1099,7 @@ func (p *SimpleAiProvider) googleChat(messages []ChatItem) AiResponse {
 		} else if role == "assistant" { // assistant role 转换为 model
 			role = "model"
 		}
-		
+
 		contents = append(contents, map[string]any{
 			"role": role,
 			"parts": []map[string]any{
@@ -1066,7 +1107,7 @@ func (p *SimpleAiProvider) googleChat(messages []ChatItem) AiResponse {
 			},
 		})
 	}
-	
+
 	payload := map[string]any{"contents": contents}
 	body, _ := json.Marshal(payload)
 	req, _ := http.NewRequest("POST", url, bytes.NewReader(body))
@@ -1117,7 +1158,7 @@ func (iw *InkWell) SummarizeClippings() string {
 		if len(frag) > 35 {
 			frag = frag[:35] + "..."
 		}
-		fmt.Printf("%2d. %s\n    %s\n", i + 1, title, Styled(frag).Fg("bright_black"))
+		fmt.Printf("%2d. %s\n    %s\n", i+1, title, Styled(frag).Fg("bright_black"))
 	}
 	fmt.Println()
 
@@ -1135,7 +1176,7 @@ func (iw *InkWell) SummarizeClippings() string {
 		// 提取需要的笔记
 		var selectedClips [][2]string
 		for i := range myClips {
-			if contains(nums, i + 1) {
+			if contains(nums, i+1) {
 				selectedClips = append(selectedClips, myClips[i])
 			}
 		}
@@ -1163,7 +1204,7 @@ func (iw *InkWell) SummarizeClippings() string {
 		}
 
 		questionText := "\nQuestion:\n" + strings.Join(questions, "\n")
-		
+
 		// 开始新对话
 		iw.Messages = iw.Messages[:1]
 		msg := strings.ReplaceAll(PromptClips, "{clips}", clipsText.String())
@@ -1205,6 +1246,16 @@ func contains[K comparable](elems []K, target K) bool {
 	return false
 }
 
+// 检查一个字符串是否包含任一子串
+func strContainsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
+
 // 将any类型转换为int，出错返回defVal
 func toInt(v any, defVal int) int {
 	n := defVal
@@ -1221,18 +1272,18 @@ func toInt(v any, defVal int) int {
 		n = int(val)
 	case string:
 		if parsed, err := strconv.Atoi(val); err == nil {
-        	n = parsed
-    	}
+			n = parsed
+		}
 	}
 	return n
 }
 
 // 取两个数小的一个
 func min(a, b int) int {
-    if a < b {
-        return a
-    }
-    return b
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // 删除切片中某个元素，返回新的切片
@@ -1240,7 +1291,7 @@ func removeAt[T any](s []T, index int) []T {
 	if index < 0 || index >= len(s) {
 		return s
 	}
-    return append(s[:index], s[index + 1:]...)
+	return append(s[:index], s[index+1:]...)
 }
 
 // 导出某些历史信息到电子书或发送邮件
@@ -1257,7 +1308,7 @@ func (iw *InkWell) ExportHistory(expName string, indexList []int) {
 				Messages: iw.Messages[1:], // 跳过System prompt
 			})
 		} else if index <= len(iw.History) {
-			history = append(history, iw.History[index - 1])
+			history = append(history, iw.History[index-1])
 		}
 	}
 
@@ -1271,7 +1322,7 @@ func (iw *InkWell) ExportHistory(expName string, indexList []int) {
 	var bookPath string
 	if !isEmail { // 寻找一个最合适的路径
 		paths := []struct {
-			dir string
+			dir    string
 			suffix string
 		}{
 			{KindleDocDir, ".txt"},
@@ -1302,13 +1353,13 @@ func (iw *InkWell) ExportHistory(expName string, indexList []int) {
 	// 生成html文件内容
 	var htmlContent strings.Builder
 	htmlContent.WriteString("<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"UTF-8\"><title>AI Chat History</title></head><body>")
-	
+
 	for _, item := range history {
 		htmlContent.WriteString(fmt.Sprintf("<h1>%s</h1><hr/>", item.Topic))
-		
+
 		for _, msg := range item.Messages {
 			content := iw.MarkdownToHtml(msg.Content, !isEmail)
-			
+
 			if msg.Role == "user" {
 				htmlContent.WriteString(fmt.Sprintf(`<div style="margin-bottom:10px;"><strong>YOU:</strong><p style="margin-left:25px;">%s</p></div><hr/>`, content))
 			} else {
@@ -1448,34 +1499,33 @@ func appDir() string {
 	if cwd, err := os.Getwd(); err == nil {
 		return cwd
 	}
-	
+
 	// 理论极端情况下
 	return os.TempDir()
 	//return getHomeDir()
 }
 
-
 // 检查目录是否可写
 func isWriteableDir(dir_ string) bool {
-    info, err := os.Stat(dir_)
-    if err != nil || !info.IsDir() {
-        return false
-    }
-    
-    // Windows 下如果目录存在就认为可写，尽管不准确，但是方便
-    // 否则可能需要通过创建一个临时文件的方式来判断
-    // runtime.GOOS 常量也可以用来判断，但是不想引入更多的库了
-    if os.PathSeparator == '\\' {
-    	return true
-    }
+	info, err := os.Stat(dir_)
+	if err != nil || !info.IsDir() {
+		return false
+	}
 
-    // 尝试打开目录句柄进行写入检查
-    file, err := os.OpenFile(dir_, os.O_WRONLY, 0)
-    if err != nil {
-        return false
-    }
-    file.Close()
-    return true
+	// Windows 下如果目录存在就认为可写，尽管不准确，但是方便
+	// 否则可能需要通过创建一个临时文件的方式来判断
+	// runtime.GOOS 常量也可以用来判断，但是不想引入更多的库了
+	if os.PathSeparator == '\\' {
+		return true
+	}
+
+	// 尝试打开目录句柄进行写入检查
+	file, err := os.OpenFile(dir_, os.O_WRONLY, 0)
+	if err != nil {
+		return false
+	}
+	file.Close()
+	return true
 }
 
 // 检查字符串是否为数字
@@ -1569,10 +1619,10 @@ func (iw *InkWell) MarkdownToHtml(content string, wrapCode bool) string {
 // MdTableToHtml markdown里面的表格转换为html格式的表格
 func (iw *InkWell) MdTableToHtml(content string) string {
 	var (
-		currTb  []string
-		tbHead  = true
-		ret     []string
-		lines   = strings.Split(content, "\n")
+		currTb []string
+		tbHead = true
+		ret    []string
+		lines  = strings.Split(content, "\n")
 	)
 
 	for _, line := range lines {
@@ -1581,13 +1631,13 @@ func (iw *InkWell) MdTableToHtml(content string) string {
 			if len(currTb) == 0 {
 				currTb = append(currTb, `<table border="1" cellspacing="0" width="100%">`)
 			}
-			
+
 			tds := strings.Split(strings.Trim(trimed, "|"), "|")
 			// 清理每个单元格的内容
 			for i := range tds {
 				tds[i] = strings.TrimSpace(tds[i])
 			}
-			
+
 			// 忽略分割行
 			if allEmpty := true; allEmpty {
 				for _, td := range tds {
@@ -1650,7 +1700,7 @@ func (iw *InkWell) ShowMenu() {
 		Styled("No previous conversations found!").Fg("bright_black").Println()
 	} else {
 		for idx, item := range iw.History {
-			Styled("%2d. %s\n").Fg("bright_black").Printf(idx + 1, item.Topic)
+			Styled("%2d. %s\n").Fg("bright_black").Printf(idx+1, item.Topic)
 		}
 	}
 	fmt.Println("")
@@ -1722,8 +1772,8 @@ func (iw *InkWell) ProcessMenu() string {
 					iw.ReplayConversation()
 					return ""
 				} else if index <= len(iw.History) { // 切换到历史对话
-					historyItem := iw.History[index - 1]
-					iw.History = removeAt(iw.History, index - 1)
+					historyItem := iw.History[index-1]
+					iw.History = removeAt(iw.History, index-1)
 					iw.SwitchConversation(historyItem)
 					iw.ReplayConversation()
 					return ""
@@ -1743,16 +1793,16 @@ func (iw *InkWell) SwitchModel() {
 	}
 
 	models := AIList[provider].Models
-	
+
 	fmt.Println("")
 	Styled(" Current model ").Fg("white").Bg("yellow").Bold().Println()
 	fmt.Printf("%s/%s\n\n", provider, model)
 	Styled(" Available models [add ! to persist] ").Fg("white").Bg("yellow").Bold().Println()
 	for idx, item := range models {
-		fmt.Printf("%2d. %s\n", idx + 1, item.Name)
+		fmt.Printf("%2d. %s\n", idx+1, item.Name)
 	}
-	fmt.Printf("%d. Other\n", len(models) + 1)
-	
+	fmt.Printf("%d. Other\n", len(models)+1)
+
 	for {
 		input := Input("» ")
 		if input == "q" || input == "Q" {
@@ -1846,7 +1896,7 @@ func (iw *InkWell) SwitchPrompt() {
 					iw.PromptName = "custom"
 				}
 			} else {
-				iw.PromptName = promptNames[index - 1]
+				iw.PromptName = promptNames[index-1]
 				prompt = iw.Prompts[iw.PromptName]
 			}
 
@@ -1870,7 +1920,7 @@ func (iw *InkWell) SwitchPrompt() {
 func (iw *InkWell) DeleteHistory(indexList []int) {
 	newHistory := []HistoryItem{}
 	for idx, item := range iw.History {
-		if !contains(indexList, idx + 1) {
+		if !contains(indexList, idx+1) {
 			newHistory = append(newHistory, item)
 		}
 	}
@@ -1885,7 +1935,7 @@ func (iw *InkWell) DeleteHistory(indexList []int) {
 // 开始一个新的会话
 func (iw *InkWell) StartNewConversation() {
 	iw.AddCurrentConvToHistory()
-	
+
 	// 初始化 Messages
 	iw.CurrTopic = DefaultTopic
 	iw.PromptName = iw.Config.Prompt
@@ -1895,7 +1945,7 @@ func (iw *InkWell) StartNewConversation() {
 // 切换到其他会话
 func (iw *InkWell) SwitchConversation(item HistoryItem) {
 	iw.AddCurrentConvToHistory()
-	
+
 	// 创建新的 Messages，保留 system prompt
 	if len(iw.Messages) > 0 {
 		iw.Messages = iw.Messages[:1]
@@ -1917,11 +1967,11 @@ func (iw *InkWell) AddCurrentConvToHistory() {
 
 	lastTopic := ""
 	if len(iw.History) > 0 {
-		lastTopic = iw.History[len(iw.History) - 1].Topic
+		lastTopic = iw.History[len(iw.History)-1].Topic
 	}
 
 	if lastTopic == iw.CurrTopic {
-		iw.History[len(iw.History) - 1].Messages = iw.Messages[1:] // 第一条消息固定为背景prompt
+		iw.History[len(iw.History)-1].Messages = iw.Messages[1:] // 第一条消息固定为背景prompt
 	} else {
 		iw.History = append(iw.History, HistoryItem{
 			Topic:    iw.CurrTopic,
@@ -1931,7 +1981,7 @@ func (iw *InkWell) AddCurrentConvToHistory() {
 	}
 
 	if len(iw.History) > maxHistory {
-		iw.History = iw.History[len(iw.History) - maxHistory:]
+		iw.History = iw.History[len(iw.History)-maxHistory:]
 	}
 	iw.SaveHistory()
 }
@@ -2010,10 +2060,9 @@ func (iw *InkWell) PrintAiResponse(resp AiResponse) {
 	} else {
 		fmt.Println(resp.Error)
 		Styled("Press r to resend the last chat").Bold().Println()
-		if strings.Contains(resp.Error, "Unauthorized") || strings.Contains(resp.Error, "Forbidden") {
-			if iw.Config.RenewApiKey != "" {
-				Styled("Press k to renew the api key").Bold().Println()
-			}
+		needRenew := strContainsAny(resp.Error, "Unauthorized", "Forbidden", "token_expired")
+		if needRenew && iw.Config.RenewApiKey != "" {
+			Styled("Press k to renew the api key").Bold().Println()
 		}
 	}
 }
@@ -2032,6 +2081,9 @@ func (iw *InkWell) LoadPrompts() {
 	content, err := os.ReadFile(PromptsFile)
 	if err != nil {
 		fmt.Printf("Failed to read %s: %v\n", Styled(PromptsFile).Bg("cyan"), err)
+		return
+	}
+	if len(content) == 0 {
 		return
 	}
 
@@ -2058,7 +2110,9 @@ func (iw *InkWell) LoadPrompts() {
 
 // 关闭所有连接
 func (p *SimpleAiProvider) Close() {
-	//p.Client.Close()
+	if p.Client != nil {
+		p.Client.CloseIdleConnections()
+	}
 }
 
 // 简单的处理markdown格式，用于在终端显示粗体斜体等效果
@@ -2100,17 +2154,17 @@ func (iw *InkWell) MarkdownToTerm(content string) string {
 // 处理markdown文本里面的表格，排版对齐以便显示在终端上
 func (iw *InkWell) MdTableToTerm(content string) string {
 	var (
-		table     [][]string // 表格的文本内容 [[col0, col1,...],]，如果不是表格行，则是原行的字符串
-		colWidths []int     // 每列文本字数，用于使用每列最大值进行对齐
-		colNums   []int     // 每行的列数，用于判断表格是否有效
+		table           [][]string // 表格的文本内容 [[col0, col1,...],]，如果不是表格行，则是原行的字符串
+		colWidths       []int      // 每列文本字数，用于使用每列最大值进行对齐
+		colNums         []int      // 每行的列数，用于判断表格是否有效
 		prevTableRowIdx = -1
-		lines = strings.Split(content, "\n")
+		lines           = strings.Split(content, "\n")
 	)
 
 	for idx, row := range lines {
 		if strings.HasPrefix(row, "|") && strings.HasSuffix(row, "|") {
 			// 必须要连续
-			if prevTableRowIdx >= 0 && (prevTableRowIdx+1) != idx {
+			if prevTableRowIdx >= 0 && (prevTableRowIdx + 1) != idx {
 				colNums = nil
 				break
 			}
@@ -2121,7 +2175,7 @@ func (iw *InkWell) MdTableToTerm(content string) string {
 				cells[i] = strings.TrimSpace(cells[i])
 			}
 			table = append(table, cells)
-			
+
 			// 更新列宽
 			if len(colWidths) < len(cells) {
 				colWidths = make([]int, len(cells))
@@ -2137,16 +2191,15 @@ func (iw *InkWell) MdTableToTerm(content string) string {
 		}
 	}
 
-	// 如果有一些列数不同，可能为多个表格，为了避免排版混乱，直接返回原结果
-	if len(colNums) == 0 || func() bool {
-		for i := 1; i < len(colNums); i++ {
-			if colNums[i] != colNums[0] {
-				return true
-			}
-		}
-		return false
-	}() {
+	if len(colWidths) == 0 || len(colNums) == 0 {
 		return content
+	}
+
+	// 如果有一些列数不同，可能为多个表格，为了避免排版混乱，直接返回原结果
+	for i := 1; i < len(colNums); i++ {
+		if colNums[i] != colNums[0] {
+			return content
+		}
 	}
 
 	// 格式化表格行
@@ -2196,11 +2249,11 @@ func (iw *InkWell) MdTableToTerm(content string) string {
 
 // 获取map的键，返回一个切片
 func getMapKeys[K comparable, V any](m map[K]V) []K {
-    keys := make([]K, 0, len(m))
-    for k := range m {
-        keys = append(keys, k)
-    }
-    return keys
+	keys := make([]K, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 // 分析命令行参数
@@ -2216,7 +2269,7 @@ func ParseArg() (setup bool, config string, clippings bool) {
 	if config == "" {
 		config = DefaultConfigFile
 	}
-	
+
 	if !filepath.IsAbs(config) {
 		config = filepath.Join(appDir(), config)
 	}
@@ -2239,12 +2292,12 @@ func main() {
 	setup, cfgFile, clippings := ParseArg()
 
 	// 如果不是初始化则配置文件必须存在
-    if !setup && !fileExists(cfgFile) {
-    	fmt.Println(fmt.Sprintf("The file %s does not exist", Styled(cfgFile).Bold()))
-    	Input("Press return key to quit ")
-    	return
-    }
-    
+	if !setup && !fileExists(cfgFile) {
+		fmt.Println(fmt.Sprintf("The file %s does not exist", Styled(cfgFile).Bold()))
+		Input("Press return key to quit ")
+		return
+	}
+
 	inkwell := &InkWell{CfgFile: cfgFile, CurrTopic: DefaultTopic}
 	if setup {
 		inkwell.Setup()

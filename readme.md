@@ -27,8 +27,12 @@ __English__ · [简体中文](readme_zh.md)
 
 
 # Installation  
-1. Ensure your Kindle is jailbroken and has **KUAL** and [Python3](https://www.mobileread.com/forums/showthread.php?t=225030) installed.  
+1. Ensure your Kindle is jailbroken and has **KUAL** and [Python3](https://www.mobileread.com/forums/showthread.php?t=225030) (If python zip is used) installed.  
 2. Extract [inkwell.zip](https://github.com/cdhigh/inkwell/releases) to the Kindle root directory (`/mnt/us`).  
+3. A Go lang port is also provided, Python-free, offering better startup speed and lower memory usage.
+  3.1. `inkwell-go.zip`: For firmware versions below 5.16.3
+  3.2. `inkwell-go-hf.zip`: For firmware versions 5.16.3 and above
+
 
 # Configuration  
 There are two ways to configure Inkwell:  

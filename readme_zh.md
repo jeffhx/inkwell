@@ -25,8 +25,11 @@
 
 
 # 安装
-1. 确保Kindle已经越狱，并且安装了**KUAL**和 [Python3](https://www.mobileread.com/forums/showthread.php?t=225030)
+1. 确保Kindle已经越狱，并且安装了**KUAL**和 [Python3](https://www.mobileread.com/forums/showthread.php?t=225030) (如果使用python版)
 2. 将 [inkwell.zip](https://github.com/cdhigh/inkwell/releases) 解压到Kindle书籍根目录(`/mnt/us`)。你不需要安装kterm，安装包已经内置kterm，也可以和你自己安装的kterm共存。   
+3. 同时提供go移植编译版，不再依赖python，启动速度和内存占用都更优。
+3.1. `inkwell-go.zip`: 适合5.16.3以下的固件
+3.2. `inkwell-go-hf.zip`: 适合5.16.3及以上的固件
 
 # 配置
 有两种配置方法，任选其一：    
