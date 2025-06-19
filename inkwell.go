@@ -1575,7 +1575,7 @@ func (iw *InkWell) MarkdownToHtml(content string, wrapCode bool) string {
 		parts := reCodeBlock.FindStringSubmatch(match)
 		lang := strings.TrimSpace(parts[1])
 		code := parts[2]
-		uid := fmt.Sprintf("[[CODEBLOCK_%s]]", generateUID())
+		uid := fmt.Sprintf("[[CODEBLOCK%s]]", generateUID())
 		codeBlocks[uid] = struct {
 			lang string
 			code string
