@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-
 	//"os/user"
 	"crypto/tls"
 	"encoding/base64"
@@ -28,7 +27,7 @@ import (
 
 // 所有常量定义
 const (
-	Version       = "v1.6-go (2025-06-17)"
+	Version       = "v1.6.1-go (2025-06-19)"
 	ConfigFile    = "config.json"
 	HistoryFile   = "history.json"
 	PromptsFile   = "prompts.txt"
@@ -411,9 +410,9 @@ func (iw *InkWell) SaveConfig(cfg *AppConfig) {
 	b, _ := json.MarshalIndent(cfg, "", "  ")
 	err := os.WriteFile(iw.CfgFile, b, 0644)
 	if err != nil {
-		Styled("Failed to write %s: %v").Sprintf(Styled(iw.CfgFile).Bold(), err).Println()
+		Styled("Failed to write %s: %v\n").Printf(Styled(iw.CfgFile).Bold(), err)
 	} else {
-		Styled("Config have been saved to file: %s").Sprintf(Styled(iw.CfgFile).Bold()).Println()
+		Styled("Config have been saved to file: %s\n").Printf(Styled(iw.CfgFile).Bold())
 	}
 }
 
@@ -742,10 +741,11 @@ func (iw *InkWell) PrintChatBubble(role, topic string) {
 // 如果传入msg，则使用msg前5个单词作为主题，否则让AI进行当前对话的总结
 func (iw *InkWell) UpdateTopic(msg string) {
 	topic := DefaultTopic
-	replacer := strings.NewReplacer("\n", " ", "\"", " ", "/", " ", "\\", " ", "'", " ", "`", " ")
+	// 这个 replacer 每次对话最多使用两次，就不提前创建为全局变量了
+	titleReplacer := strings.NewReplacer("\n", " ", "\"", " ", "/", " ", "\\", " ", "'", " ", "`", " ")
 	if msg != "" {
 		// 直接从消息中提取前5个单词作为主题
-		words := strings.Fields(replacer.Replace(msg))
+		words := strings.Fields(titleReplacer.Replace(msg))
 		if len(words) > 5 {
 			words = words[:5]
 		}
@@ -755,7 +755,7 @@ func (iw *InkWell) UpdateTopic(msg string) {
 		messages := append(iw.Messages, ChatItem{Role: "user", Content: PromptGetTopic})
 		resp := iw.FetchAiResponse(messages)
 		if resp.Success {
-			topic = replacer.Replace(resp.Content)
+			topic = titleReplacer.Replace(resp.Content)
 		}
 	}
 	if len(topic) > 40 {
@@ -1352,10 +1352,10 @@ func (iw *InkWell) ExportHistory(expName string, indexList []int) {
 
 	// 生成html文件内容
 	var htmlContent strings.Builder
-	htmlContent.WriteString("<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"UTF-8\"><title>AI Chat History</title></head><body>")
+	htmlContent.WriteString("<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"UTF-8\"><title>AI Chat History</title></head><body>\n")
 
 	for _, item := range history {
-		htmlContent.WriteString(fmt.Sprintf("<h1>%s</h1><hr/>", item.Topic))
+		htmlContent.WriteString(fmt.Sprintf("<h1>%s</h1><hr/>\n", item.Topic))
 
 		for _, msg := range item.Messages {
 			content := iw.MarkdownToHtml(msg.Content, !isEmail)
@@ -1512,20 +1512,27 @@ func isWriteableDir(dir_ string) bool {
 		return false
 	}
 
-	// Windows 下如果目录存在就认为可写，尽管不准确，但是方便
-	// 否则可能需要通过创建一个临时文件的方式来判断
-	// runtime.GOOS 常量也可以用来判断，但是不想引入更多的库了
-	if os.PathSeparator == '\\' {
-		return true
-	}
+	tempFile := filepath.Join(dir_, ".write_test")
+    file, err := os.Create(tempFile)
+    if err != nil {
+        return false
+    }
+    file.Close()
+    os.Remove(tempFile)
+    return true
+}
 
-	// 尝试打开目录句柄进行写入检查
-	file, err := os.OpenFile(dir_, os.O_WRONLY, 0)
-	if err != nil {
-		return false
-	}
-	file.Close()
-	return true
+// html转义
+func htmlEscape(s string) string {
+	// 导出聊天历史才会使用，效率不是很重要，启动速度才重要，就不创建为全局变量了
+	var htmlReplacer = strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+		`"`, "&quot;",
+		"'", "&#39;",
+	)
+	return htmlReplacer.Replace(s)
 }
 
 // 检查字符串是否为数字
@@ -1536,81 +1543,126 @@ func isNumeric(s string) bool {
 
 // 生成一个唯一标识符
 func generateUID() string {
-	return fmt.Sprintf("%d%d", time.Now().UnixNano(), rand.Int63())
+	//return fmt.Sprintf("%d%d", time.Now().UnixNano(), rand.Int63())
+	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, 16)
+	for i := range b {
+		b[i] = letters[rand.Intn(len(letters))]
+	}
+	return string(b)
 }
 
 // 简单的markdown转换为html
 // wrapCode: 使用table套在code代码段外模拟一个边框
 func (iw *InkWell) MarkdownToHtml(content string, wrapCode bool) string {
-	// 先把多行代码块中的文本提取出来，避免下面其他的处理搞乱代码
+	reCodeBlock := regexp.MustCompile("(?s)```(?:([\\w\\-\\+]*)\\n)?(.*?)```")
+	reInlineCode := regexp.MustCompile("`([^`]+)`")
+	reHeader := regexp.MustCompile("(?m)^(#{1,6})\\s+(.+)$")
+	reBold := regexp.MustCompile(`\*\*(.+?)\*\*|__(.+?)__`)
+	reItalic := regexp.MustCompile(`\*(.+?)\*|_(.+?)_`)
+	reStrike := regexp.MustCompile(`~~(.+?)~~`)
+	reUL := regexp.MustCompile(`(?m)^\s*[\*\-]\s+(.+)$`)
+	reOL := regexp.MustCompile(`(?m)^\s*(\d+)\.\s+(.+)$`)
+	reQuote := regexp.MustCompile(`(?m)^\s*>\s+(.+)$`)
+	reLink := regexp.MustCompile(`\[(.+?)\]\((.+?)\)`)
+
+	// 提取代码块
 	codeBlocks := make(map[string]struct {
 		lang string
 		code string
 	})
-	content = regexp.MustCompile("```(\\w+)?\\n([\\s\\S]*?)```").ReplaceAllStringFunc(content, func(match string) string {
-		id := fmt.Sprintf("{{%s}}", generateUID())
-		parts := regexp.MustCompile("```(\\w+)?\\n([\\s\\S]*?)```").FindStringSubmatch(match)
-		codeBlocks[id] = struct {
+	content = reCodeBlock.ReplaceAllStringFunc(content, func(match string) string {
+		parts := reCodeBlock.FindStringSubmatch(match)
+		lang := strings.TrimSpace(parts[1])
+		code := parts[2]
+		uid := fmt.Sprintf("[[CODEBLOCK_%s]]", generateUID())
+		codeBlocks[uid] = struct {
 			lang string
 			code string
 		}{
-			lang: parts[1],
-			code: parts[2],
+			lang: lang,
+			code: code,
 		}
-		return id
+		return uid
 	})
 
-	// 行内代码 (`code`)
-	content = regexp.MustCompile("`([^`]+)`").ReplaceAllString(content, "<code>$1</code>")
+	// 行内代码
+	content = reInlineCode.ReplaceAllString(content, "<code>$1</code>")
 
-	// 表格处理
-	content = iw.MdTableToHtml(content)
+	// 链接
+	content = reLink.ReplaceAllString(content, `<a href="$2">$1</a>`)
 
-	// 标题 (# 或 ## 等)
-	content = regexp.MustCompile("(?m)^(#{1,6})\\s+?(.*)$").ReplaceAllStringFunc(content, func(match string) string {
-		parts := regexp.MustCompile("^(#{1,6})\\s+?(.*)$").FindStringSubmatch(match)
+	// 标题
+	content = reHeader.ReplaceAllStringFunc(content, func(m string) string {
+		parts := reHeader.FindStringSubmatch(m)
 		level := len(parts[1])
 		return fmt.Sprintf("<h%d>%s</h%d>", level, strings.TrimSpace(parts[2]), level)
 	})
 
-	// 加粗 (**bold** 或 __bold__)
-	content = regexp.MustCompile(`\*\*(.*?)\*\*`).ReplaceAllString(content, "<strong>$1</strong>")
-	content = regexp.MustCompile(`__(.*?)__`).ReplaceAllString(content, "<strong>$1</strong>")
+	// 引用
+	content = reQuote.ReplaceAllString(content, `<blockquote>$1</blockquote>`)
 
-	// 斜体 (*italic* 或 _italic_)
-	content = regexp.MustCompile(`\*(.*?)\*`).ReplaceAllString(content, "<em>$1</em>")
-	content = regexp.MustCompile(`_(.*?)_`).ReplaceAllString(content, "<em>$1</em>")
+	// 无序列表
+	content = reUL.ReplaceAllString(content, `<div><strong>• </strong>$1</div>`)
 
-	// 删除线 (~~text~~)
-	content = regexp.MustCompile("~{1,2}(.*?)~{1,2}").ReplaceAllString(content, "<s>$1</s>")
+	// 有序列表
+	content = reOL.ReplaceAllString(content, `<div><strong>$1. </strong>$2</div>`)
 
-	// 无序列表 (- 或 * 开头)
-	content = regexp.MustCompile("(?m)^ *[\\*\\-]\\s+?(.*)$").ReplaceAllString(content, "<div><strong>• </strong>$1</div>")
+	// 加粗
+	content = reBold.ReplaceAllStringFunc(content, func(m string) string {
+		parts := reBold.FindStringSubmatch(m)
+		if parts[1] != "" {
+			return "<strong>" + parts[1] + "</strong>"
+		}
+		return "<strong>" + parts[2] + "</strong>"
+	})
 
-	// 有序列表 (数字加点开头)
-	content = regexp.MustCompile("(?m)^ *(\\d+\\.\\s+?)(.*)$").ReplaceAllString(content, "<div><strong>$1</strong>$2</div>")
+	// 斜体
+	content = reItalic.ReplaceAllStringFunc(content, func(m string) string {
+		parts := reItalic.FindStringSubmatch(m)
+		if parts[1] != "" {
+			return "<em>" + parts[1] + "</em>"
+		}
+		return "<em>" + parts[2] + "</em>"
+	})
 
-	// 引用 (大于号开头)
-	content = regexp.MustCompile("(?m)^\\s*>+\\s+?(.*)$").ReplaceAllString(content, "<blockquote>$1</blockquote>")
+	// 删除线
+	content = reStrike.ReplaceAllString(content, `<s>$1</s>`)
 
-	// 链接 [text](url)
-	content = regexp.MustCompile("\\[([^\\]]+)\\]\\(([^)]+)\\)").ReplaceAllString(content, "<a href=\"$2\">$1</a>")
-
-	// 段落 (保持换行)
-	content = regexp.MustCompile("([^\\n]+)").ReplaceAllString(content, "<div>$1</div>")
-
-	// 恢复代码块
-	var tpl string
-	if wrapCode {
-		tpl = `<table border="1" cellspacing="0" width="100%" style="background-color:#f9f9f9;">` +
-			`<tr><td><pre><code class="%s">%s</code></pre></td></tr></table>`
-	} else {
-		tpl = `<pre style="border:1px solid #555555;padding:10px;background-color:#f9f9f9;"><code class="%s">%s</code></pre>`
+	// 段落包裹（在恢复代码块之前）
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lineTrim := strings.TrimSpace(line)
+		if lineTrim == "" {
+			continue
+		}
+		if strings.HasPrefix(lineTrim, "<h") ||
+			strings.HasPrefix(lineTrim, "<pre") ||
+			strings.HasPrefix(lineTrim, "<blockquote") ||
+			strings.HasPrefix(lineTrim, "<div>") ||
+			strings.HasPrefix(lineTrim, "<table") {
+			continue
+		}
+		lines[i] = "<div>" + lineTrim + "</div>"
 	}
+	content = strings.Join(lines, "\n")
 
-	for id, block := range codeBlocks {
-		code := strings.ReplaceAll(block.code, " ", "&nbsp;")
-		content = strings.ReplaceAll(content, id, fmt.Sprintf(tpl, block.lang, code))
+	// 最后恢复代码块
+	codeTpl := ""
+	if wrapCode {
+		codeTpl = `<table border="1" bordercolor="silver" cellspacing="0" width="100%%" style="background-color:#f9f9f9;border:1px solid silver;">
+		<tr><td style="padding:10px;"><pre><code class="%s">%s</code></pre></td></tr></table>`
+	} else {
+		codeTpl = `<pre style="border:1px solid silver;padding:10px;background-color:#f9f9f9;"><code%s>%s</code></pre>`
+	}
+	for uid, block := range codeBlocks {
+		langAttr := block.lang
+		if langAttr != "" {
+			langAttr = "lang"
+		}
+		escaped := strings.ReplaceAll(htmlEscape(block.code), " ", "&nbsp;")
+		html := fmt.Sprintf(codeTpl, langAttr, escaped)
+		content = strings.ReplaceAll(content, uid, html)
 	}
 
 	return content
@@ -1725,7 +1777,7 @@ func (iw *InkWell) ShowCmdList() {
 func (iw *InkWell) ProcessMenu() string {
 	iw.ShowMenu()
 	for {
-		input := Input("[num, c, d, e, m, n, p, q, ?] » ")
+		input := strings.ToLower(Input("[num, c, d, e, m, n, p, q, ?] » "))
 		switch input {
 		case "q": // 退出
 			return "quit"
@@ -1814,13 +1866,13 @@ func (iw *InkWell) SwitchModel() {
 		index := toInt(input, 0)
 
 		if 1 <= index && index <= len(models) {
-			iw.Provider.Model = models[index - 1].Name
+			iw.Provider.Model = models[index-1].Name
 			iw.Config.Model = iw.Provider.Model
 			if needSave {
 				iw.SaveConfig(nil)
 			}
 			break
-		} else if index == len(models) + 1 {
+		} else if index == len(models)+1 {
 			if modelName := Input("Model Name » "); modelName != "" {
 				iw.Provider.Model = modelName
 				iw.Config.Model = modelName
@@ -2164,7 +2216,7 @@ func (iw *InkWell) MdTableToTerm(content string) string {
 	for idx, row := range lines {
 		if strings.HasPrefix(row, "|") && strings.HasSuffix(row, "|") {
 			// 必须要连续
-			if prevTableRowIdx >= 0 && (prevTableRowIdx + 1) != idx {
+			if prevTableRowIdx >= 0 && (prevTableRowIdx+1) != idx {
 				colNums = nil
 				break
 			}

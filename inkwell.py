@@ -23,7 +23,7 @@ import os, sys, re, json, ssl, argparse
 import http.client
 from urllib.parse import urlsplit
 
-__Version__ = 'v1.6 (2025-06-17)'
+__Version__ = 'v1.6.1 (2025-06-19)'
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
 CONFIG_JSON = f"{BASE_PATH}/config.json"
 HISTORY_JSON = "history.json" #历史文件会自动跟随程序传入的配置文件路径
@@ -407,13 +407,13 @@ class InkWell:
 
         #恢复多行代码块，Kindle不支持div边框，所以在代码块外套一个table，使用table的外框
         if wrapCode:
-            tpl = ('<table border="1" cellspacing="0" width="100%" style="background-color:#f9f9f9;">'
-                '<tr><td><pre><code class="{lang}">{code}</code></pre></td></tr></table>')
+            tpl = ('<table border="1" bordercolor="silver" cellspacing="0" width="100%" style="background-color:#f9f9f9;border:1px solid silver;">'
+                '<tr><td style="padding:5px;"><pre><code class="{lang}">{code}</code></pre></td></tr></table>')
         else:
             tpl = '<pre style="border:1px solid #555555;padding:10px;background-color:#f9f9f9;"><code class="{lang}">{code}</code></pre>'
         for id_, (lang, code) in codes.items():
             code = code.replace(' ', '&nbsp;')
-            content = content.replace(id_, tpl.format(lang=lang, code=code))
+            content = content.replace(id_, tpl.format(lang=lang or "lang", code=code))
             
         return content
 
