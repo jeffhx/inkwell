@@ -27,7 +27,7 @@ import (
 
 // 所有常量定义
 const (
-	Version       = "v1.6.1-go (2025-06-19)"
+	Version       = "v1.6.4-go (2025-07-07)"
 	ConfigFile    = "config.json"
 	HistoryFile   = "history.json"
 	PromptsFile   = "prompts.txt"
