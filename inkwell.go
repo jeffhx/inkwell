@@ -986,6 +986,8 @@ func (p *SimpleAiProvider) Chat(messages []ChatItem) AiResponse {
 		return p.openaiChat(messages, "chat/completions")
 	case "alibaba":
 		return p.openaiChat(messages, "compatible-mode/v1/chat/completions")
+	case "anthropic":
+		return p.anthropicChat(messages)
 	default:
 		return AiResponse{
 			Success: false,
@@ -1134,6 +1136,64 @@ func (p *SimpleAiProvider) googleChat(messages []ChatItem) AiResponse {
 	json.Unmarshal(respBody, &result)
 	if len(result.Candidates) > 0 && len(result.Candidates[0].Content.Parts) > 0 {
 		return AiResponse{Success: true, Content: result.Candidates[0].Content.Parts[0].Text, Error: "", Host: host}
+	} else {
+		return AiResponse{Success: false, Content: "", Error: "no response", Host: host}
+	}
+}
+
+// Anthropic的聊天接口
+func (p *SimpleAiProvider) anthropicChat(messages []ChatItem) AiResponse {
+	host := p.NextHost()
+	if host == "" {
+		host = AIList["anthropic"].Host
+	}
+	apiKey := p.NextApiKey()
+	url := fmt.Sprintf("%s/v1/complete", host)
+	// 如果有超过一个host，则返回当前host，否则返回空
+	if len(p.Hosts) == 1 {
+		host = ""
+	}
+
+	// 转换消息格式为Anthropic API格式
+	var promptParts []string
+	for _, item := range messages {
+		role := "Human"
+		if item.Role == "assistant" {
+			role = "Assistant"
+		}
+		content := item.Content
+		promptParts = append(promptParts, fmt.Sprintf("\n\n%s: %s", role, content))
+	}
+	prompt := strings.Join(promptParts, "") + "\n\nAssistant:"
+
+	payload := map[string]any{
+		"prompt":               prompt,
+		"model":                p.Model,
+		"max_tokens_to_sample": 256,
+	}
+	body, _ := json.Marshal(payload)
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(body))
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Anthropic-Version", "2023-06-01")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", apiKey)
+	
+	resp, err := p.Client.Do(req)
+	if err != nil {
+		return AiResponse{Success: false, Content: "", Error: err.Error(), Host: host}
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		errTxt := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(respBody))
+		return AiResponse{Success: false, Content: "", Error: errTxt, Host: host}
+	}
+	var result struct {
+		Completion string `json:"completion"`
+	}
+	json.Unmarshal(respBody, &result)
+	if result.Completion != "" {
+		return AiResponse{Success: true, Content: result.Completion, Error: "", Host: host}
 	} else {
 		return AiResponse{Success: false, Content: "", Error: "no response", Host: host}
 	}
