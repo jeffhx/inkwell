@@ -797,7 +797,14 @@ func (iw *InkWell) Start(clippings bool) {
 		Model:      model,
 		Hosts:      hosts,
 		SingleTurn: singleTurn,
-		Client:     &http.Client{Timeout: 30 * time.Second},
+		Client:     &http.Client{
+			Timeout: 60 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        10,
+				MaxIdleConnsPerHost: 2,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
 	}
 	iw.LoadHistory()
 	iw.StartNewConversation()
@@ -1050,9 +1057,23 @@ func (p *SimpleAiProvider) openaiChat(messages []ChatItem, path string) AiRespon
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := p.Client.Do(req)
-	if err != nil {
-		return AiResponse{Success: false, Content: "", Error: err.Error(), Host: host}
+	
+	const maxRetries = 2
+	var resp *http.Response
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		resp, err = p.Client.Do(req)
+		if err != nil {
+			if strings.Contains(err.Error(), "EOF") || 
+			   strings.Contains(err.Error(), "connection reset") {
+				if attempt == maxRetries-1 {
+					return AiResponse{Success: false, Content: "", Error: err.Error(), Host: host}
+				}
+				time.Sleep(time.Second)
+				continue
+			}
+			return AiResponse{Success: false, Content: "", Error: err.Error(), Host: host}
+		}
+		break
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
