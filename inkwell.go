@@ -250,9 +250,10 @@ var AIList = map[string]AiProviderInfo{
 	"perplexity": {
 		Host: "https://api.perplexity.ai",
 		Models: []AiModel{
-			{Name: "llama-3.1-sonar-small-128k-online", Rpm: 60, Context: 128000},
-			{Name: "llama-3.1-sonar-large-128k-online", Rpm: 60, Context: 128000},
-			{Name: "llama-3.1-sonar-huge-128k-online", Rpm: 60, Context: 128000},
+			{Name: "sonar", Rpm: 60, Context: 128000},
+			// {Name: "llama-3.1-sonar-small-128k-online", Rpm: 60, Context: 128000},
+			// {Name: "llama-3.1-sonar-large-128k-online", Rpm: 60, Context: 128000},
+			// {Name: "llama-3.1-sonar-huge-128k-online", Rpm: 60, Context: 128000},
 		},
 	},
 	"alibaba": {
