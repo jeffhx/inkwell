@@ -27,7 +27,7 @@ import (
 
 // 所有常量定义
 const (
-	Version       = "v1.6.4-go (2025-07-07)"
+	Version       = "v1.6.5-go (2025-07-09)"
 	ConfigFile    = "config.json"
 	HistoryFile   = "history.json"
 	PromptsFile   = "prompts.txt"
@@ -991,7 +991,7 @@ func (p *SimpleAiProvider) Chat(messages []ChatItem) AiResponse {
 	case "groq":
 		return p.openaiChat(messages, "openai/v1/chat/completions")
 	case "perplexity":
-		return p.openaiChat(messages, "chat/completions")
+		return p.openaiChat(messages, "v1/chat/completions")
 	case "alibaba":
 		return p.openaiChat(messages, "compatible-mode/v1/chat/completions")
 	case "anthropic":
