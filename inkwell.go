@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+
 	//"os/user"
 	"crypto/tls"
 	"encoding/base64"
@@ -991,7 +992,7 @@ func (p *SimpleAiProvider) Chat(messages []ChatItem) AiResponse {
 	case "groq":
 		return p.openaiChat(messages, "openai/v1/chat/completions")
 	case "perplexity":
-		return p.openaiChat(messages, "v1/chat/completions")
+		return p.openaiChat(messages, "chat/completions")
 	case "alibaba":
 		return p.openaiChat(messages, "compatible-mode/v1/chat/completions")
 	case "anthropic":
@@ -1360,14 +1361,6 @@ func toInt(v any, defVal int) int {
 	return n
 }
 
-// 取两个数小的一个
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // 删除切片中某个元素，返回新的切片
 func removeAt[T any](s []T, index int) []T {
 	if index < 0 || index >= len(s) {
@@ -1639,7 +1632,7 @@ func generateUID() string {
 func (iw *InkWell) MarkdownToHtml(content string, wrapCode bool) string {
 	reCodeBlock := regexp.MustCompile("(?s)```(?:([\\w\\-\\+]*)\\n)?(.*?)```")
 	reInlineCode := regexp.MustCompile("`([^`]+)`")
-	reHeader := regexp.MustCompile("(?m)^(#{1,6})\\s+(.+)$")
+	reHeader := regexp.MustCompile(`(?m)^(#{1,6})\\s+(.+)$`)
 	reBold := regexp.MustCompile(`\*\*(.+?)\*\*|__(.+?)__`)
 	reItalic := regexp.MustCompile(`\*(.+?)\*|_(.+?)_`)
 	reStrike := regexp.MustCompile(`~~(.+?)~~`)
