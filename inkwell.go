@@ -1454,7 +1454,12 @@ func (iw *InkWell) ExportHistory(expName string, indexList []int) {
 	content := htmlContent.String()
 	var err error
 	if isEmail {
-		err = iw.SmtpSendMail(expName, content)
+		// 收集所有导出对话的主题
+		var topics []string
+		for _, item := range history {
+			topics = append(topics, item.Topic)
+		}
+		err = iw.SmtpSendMail(expName, content, topics)
 	} else {
 		err = os.WriteFile(expName, []byte(content), 0644)
 	}
@@ -1467,7 +1472,7 @@ func (iw *InkWell) ExportHistory(expName string, indexList []int) {
 }
 
 // 使用smtp发送邮件
-func (iw *InkWell) SmtpSendMail(to, content string) error {
+func (iw *InkWell) SmtpSendMail(to, content string, conversationTopics []string) error {
 	sender := strings.TrimSpace(iw.Config.SmtpSender)
 	host := strings.TrimSpace(iw.Config.SmtpHost)
 	username := strings.TrimSpace(iw.Config.SmtpUsername)
@@ -1492,11 +1497,22 @@ func (iw *InkWell) SmtpSendMail(to, content string) error {
 	smtpHost := hostParts[0]
 	port, _ := strconv.Atoi(hostParts[1])
 
+	// 构建邮件主题
+	subject := "From Inkwell AI"
+	if len(conversationTopics) > 0 {
+		// 限制主题行长度，避免过长
+		topicPart := strings.Join(conversationTopics, ", ")
+		if len(topicPart) > 50 {
+			topicPart = topicPart[:47] + "..."
+		}
+		subject += ": " + topicPart
+	}
+
 	// 准备邮件内容
 	msg := []string{
 		"From: " + sender,
 		"To: " + to,
-		"Subject: AI Chat History",
+		"Subject: " + subject,
 		"MIME-Version: 1.0",
 		"Content-Type: multipart/mixed; boundary=boundary123",
 		"",
