@@ -76,6 +76,7 @@ Clippings:
 	"prompt": "default",
 	"custom_prompt": "",
 	"smtp_sender": "",
+	"smtp_recipient": "",
 	"smtp_host": "",
 	"smtp_username": "",
     "smtp_password": "",
@@ -133,11 +134,12 @@ type AppConfig struct {
 	MaxHistory   int    `json:"max_history"`
 	Prompt       string `json:"prompt"`
 	CustomPrompt string `json:"custom_prompt"`
-	SmtpSender   string `json:"smtp_sender"`
-	SmtpHost     string `json:"smtp_host"`
-	SmtpUsername string `json:"smtp_username"`
-	SmtpPassword string `json:"smtp_password"`
-	RenewApiKey  string `json:"renew_api_key"`
+	SmtpSender    string `json:"smtp_sender"`
+	SmtpRecipient string `json:"smtp_recipient"`
+	SmtpHost      string `json:"smtp_host"`
+	SmtpUsername  string `json:"smtp_username"`
+	SmtpPassword  string `json:"smtp_password"`
+	RenewApiKey   string `json:"renew_api_key"`
 }
 
 // 表示每一条信息
@@ -1913,8 +1915,24 @@ func (iw *InkWell) ProcessMenu() string {
 
 			// 处理导出历史命令 (e1, e1-3 等)
 			if strings.HasPrefix(input, "e") && len(input) > 1 {
-				fmt.Print("Filename/Email: ")
-				if expName := Input(""); expName != "" {
+				var expName string
+				defaultRecipient := strings.TrimSpace(iw.Config.SmtpRecipient)
+				
+				if defaultRecipient != "" {
+					// 使用默认收件人，但允许用户覆盖
+					fmt.Printf("Email to [%s] or enter different target: ", defaultRecipient)
+					if userInput := Input(""); userInput != "" {
+						expName = userInput
+					} else {
+						expName = defaultRecipient
+					}
+				} else {
+					// 没有默认收件人，使用原来的逻辑
+					fmt.Print("Filename/Email: ")
+					expName = Input("")
+				}
+				
+				if expName != "" {
 					iw.ExportHistory(expName, ParseRange(input[1:]))
 				} else {
 					fmt.Println("The filename is empty, canceled")
