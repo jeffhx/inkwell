@@ -1468,13 +1468,19 @@ func (iw *InkWell) ExportHistory(expName string, indexList []int) {
 
 // 使用smtp发送邮件
 func (iw *InkWell) SmtpSendMail(to, content string) error {
-	sender := iw.Config.SmtpSender
-	host := iw.Config.SmtpHost
-	username := iw.Config.SmtpUsername
-	password := iw.Config.SmtpPassword
+	sender := strings.TrimSpace(iw.Config.SmtpSender)
+	host := strings.TrimSpace(iw.Config.SmtpHost)
+	username := strings.TrimSpace(iw.Config.SmtpUsername)
+	password := strings.TrimSpace(iw.Config.SmtpPassword)
 
 	if sender == "" || host == "" || username == "" || password == "" {
 		return fmt.Errorf("some configuration items are missing")
+	}
+
+	// Validate sender email format
+	emailRegex := regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
+	if !emailRegex.MatchString(sender) {
+		return fmt.Errorf("invalid sender email format: %s", sender)
 	}
 
 	// 分割主机和端口
