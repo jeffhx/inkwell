@@ -251,7 +251,7 @@ var AIList = map[string]AiProviderInfo{
 	"perplexity": {
 		Host: "https://api.perplexity.ai",
 		Models: []AiModel{
-			{Name: "sonar", Rpm: 60, Context: 128000},
+			{Name: "sonar-pro", Rpm: 60, Context: 128000},
 			// {Name: "llama-3.1-sonar-small-128k-online", Rpm: 60, Context: 128000},
 			// {Name: "llama-3.1-sonar-large-128k-online", Rpm: 60, Context: 128000},
 			// {Name: "llama-3.1-sonar-huge-128k-online", Rpm: 60, Context: 128000},
@@ -799,7 +799,7 @@ func (iw *InkWell) Start(clippings bool) {
 		Model:      model,
 		Hosts:      hosts,
 		SingleTurn: singleTurn,
-		Client:     &http.Client{
+		Client: &http.Client{
 			Timeout: 60 * time.Second,
 			Transport: &http.Transport{
 				MaxIdleConns:        10,
@@ -1050,6 +1050,13 @@ func (p *SimpleAiProvider) openaiChat(messages []ChatItem, path string) AiRespon
 			Error:   fmt.Sprintf("Failed to marshal payload: %v", err),
 		}
 	}
+
+	/* DEBUG ONLY */
+	// return AiResponse{
+	// 	Success: true,
+	// 	Content: url + "\n" + string(body),
+	// }
+
 	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
 		return AiResponse{
@@ -1059,14 +1066,14 @@ func (p *SimpleAiProvider) openaiChat(messages []ChatItem, path string) AiRespon
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
-	
+
 	const maxRetries = 2
 	var resp *http.Response
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		resp, err = p.Client.Do(req)
 		if err != nil {
-			if strings.Contains(err.Error(), "EOF") || 
-			   strings.Contains(err.Error(), "connection reset") {
+			if strings.Contains(err.Error(), "EOF") ||
+				strings.Contains(err.Error(), "connection reset") {
 				if attempt == maxRetries-1 {
 					return AiResponse{Success: false, Content: "", Error: err.Error(), Host: host}
 				}
@@ -1200,7 +1207,7 @@ func (p *SimpleAiProvider) anthropicChat(messages []ChatItem) AiResponse {
 	req.Header.Set("Anthropic-Version", "2023-06-01")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", apiKey)
-	
+
 	resp, err := p.Client.Do(req)
 	if err != nil {
 		return AiResponse{Success: false, Content: "", Error: err.Error(), Host: host}
@@ -1588,13 +1595,13 @@ func isWriteableDir(dir_ string) bool {
 	}
 
 	tempFile := filepath.Join(dir_, ".write_test")
-    file, err := os.Create(tempFile)
-    if err != nil {
-        return false
-    }
-    file.Close()
-    os.Remove(tempFile)
-    return true
+	file, err := os.Create(tempFile)
+	if err != nil {
+		return false
+	}
+	file.Close()
+	os.Remove(tempFile)
+	return true
 }
 
 // html转义
