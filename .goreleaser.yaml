@@ -1,46 +1,169 @@
-# This is an example .goreleaser.yml file with some sensible defaults.
-# Make sure to check the documentation at https://goreleaser.com
-
-# The lines below are called `modelines`. See `:help modeline`
-# Feel free to remove those if you don't want/need to use them.
+# GoReleaser configuration for Inkwell AI Assistant
+# Targets Kindle devices (ARM v5) and general purpose platforms
 # yaml-language-server: $schema=https://goreleaser.com/static/schema.json
-# vim: set ts=2 sw=2 tw=0 fo=cnqoj
 
 version: 1
 
 before:
   hooks:
-    # You may remove this if you don't use go modules.
     - go mod tidy
-    # you may remove this if you don't need go generate
-    - go generate ./...
 
 builds:
-  - env:
+  # Primary Kindle build (ARM v5) - matches build_go_kindle.sh
+  - id: "kindle-arm5"
+    binary: "inkwell-arm5"
+    env:
+      - CGO_ENABLED=0
+      - GOMEMLIMIT=16MiB
+      - GOGC=50
+    goos:
+      - linux
+    goarch:
+      - arm
+    goarm:
+      - 5
+    ldflags:
+      - -s -w
+    flags:
+      - -trimpath
+
+  # Additional Kindle build (ARM v6) for newer devices
+  - id: "kindle-arm6"
+    binary: "inkwell-arm6"
+    env:
+      - CGO_ENABLED=0
+      - GOMEMLIMIT=16MiB
+      - GOGC=50
+    goos:
+      - linux
+    goarch:
+      - arm
+    goarm:
+      - 6
+    ldflags:
+      - -s -w
+    flags:
+      - -trimpath
+
+  # Additional Kindle build (ARM v7) for latest devices
+  - id: "kindle-arm7"
+    binary: "inkwell-arm7"
+    env:
+      - CGO_ENABLED=0
+      - GOMEMLIMIT=16MiB
+      - GOGC=50
+    goos:
+      - linux
+    goarch:
+      - arm
+    goarm:
+      - 7
+    ldflags:
+      - -s -w
+    flags:
+      - -trimpath
+
+  # General purpose builds
+  - id: "general"
+    binary: "inkwell"
+    env:
       - CGO_ENABLED=0
     goos:
       - linux
       - windows
       - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+    flags:
+      - -trimpath
 
 archives:
-  - format: tar.gz
-    # this name template makes the OS and Arch compatible with the results of `uname`.
+  # Kindle-specific archives (separate from general builds)
+  - id: "kindle-archives"
+    builds:
+      - "kindle-arm5"
+      - "kindle-arm6" 
+      - "kindle-arm7"
+    format: tar.gz
+    name_template: >-
+      {{ .ProjectName }}-kindle_
+      {{- .Os }}_
+      {{- .Arch }}v{{ .Arm }}
+    files:
+      - README*.md
+      - LICENSE
+      - CLAUDE.md
+
+  # General purpose archives
+  - id: "general-archives"
+    builds:
+      - "general"
+    format: tar.gz
     name_template: >-
       {{ .ProjectName }}_
       {{- title .Os }}_
       {{- if eq .Arch "amd64" }}x86_64
       {{- else if eq .Arch "386" }}i386
       {{- else }}{{ .Arch }}{{ end }}
-      {{- if .Arm }}v{{ .Arm }}{{ end }}
-    # use zip for windows archives
     format_overrides:
       - goos: windows
         format: zip
+    files:
+      - README*.md
+      - LICENSE
+      - CLAUDE.md
 
 changelog:
   sort: asc
+  use: github
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Documentation updates
+      regexp: '^.*?docs(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: Other work
+      order: 999
   filters:
     exclude:
       - "^docs:"
       - "^test:"
+      - "^chore:"
+      - "merge conflict"
+      - Merge pull request
+      - Merge remote-tracking branch
+      - Merge branch
+
+release:
+  github:
+    owner: cdhigh
+    name: inkwell
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    ## Inkwell AI Assistant Release {{ .Tag }}
+    
+    **For Kindle devices:** Download `inkwell-kindle_linux_armv5.tar.gz` (most compatible)
+    **For general use:** Download the appropriate archive for your platform
+    
+  footer: |
+    ### Installation
+    
+    **Kindle Installation:**
+    1. Ensure your Kindle is jailbroken with KUAL installed
+    2. Extract the Kindle archive to `/mnt/us/`
+    3. Configure your AI provider in `config.json`
+    
+    **General Installation:**
+    1. Extract the archive for your platform
+    2. Run `inkwell --setup` for initial configuration
+    
+    ### What's Changed
