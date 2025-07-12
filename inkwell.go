@@ -28,13 +28,13 @@ import (
 
 // 所有常量定义
 const (
-	Version       = "v1.6.5-go (2025-07-09)"
+	Version       = "v1.6.6-go (2025-07-11)"
 	ConfigFile    = "config.json"
 	HistoryFile   = "history.json"
 	PromptsFile   = "prompts.txt"
 	KindleDocDir  = "/mnt/us/documents"
 	ClippingsTxt  = "My Clippings.txt"
-	DefaultTopic  = "New chat"
+	DefaultTopic  = "Inkwell Chat"
 	DefaultPrompt = `You are a helpful assistant.
 - You are to provide clear, concise, and direct responses.
 - Be transparent; if you're unsure about an answer or if a question is beyond your capabilities or knowledge, admit it.
@@ -253,6 +253,7 @@ var AIList = map[string]AiProviderInfo{
 	"perplexity": {
 		Host: "https://api.perplexity.ai",
 		Models: []AiModel{
+			{Name: "sonar", Rpm: 60, Context: 128000},
 			{Name: "sonar-pro", Rpm: 60, Context: 128000},
 			// {Name: "llama-3.1-sonar-small-128k-online", Rpm: 60, Context: 128000},
 			// {Name: "llama-3.1-sonar-large-128k-online", Rpm: 60, Context: 128000},
